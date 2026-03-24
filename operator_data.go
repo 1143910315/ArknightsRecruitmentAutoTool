@@ -22,6 +22,7 @@ import (
 const (
 	operatorDataSourceURL = "https://wiki.biligame.com/arknights/公开招募工具"
 	operatorCacheFileName = "operators.json"
+	operatorAssetURLBase  = "/operator-cache/"
 )
 
 var errOperatorCacheNotFound = errors.New("operator cache not found")
@@ -250,11 +251,11 @@ func parseOperatorMetadata(raw string, displayTags []string) OperatorMetadata {
 func ensureOperatorCacheDir(baseDir string) (string, error) {
 	root := baseDir
 	if root == "" {
-		userCacheDir, err := os.UserCacheDir()
+		runtimeDir, err := resolveAppRuntimeDir()
 		if err != nil {
 			return "", err
 		}
-		root = filepath.Join(userCacheDir, "ArknightsRecruitmentAutoTool", "operator-data")
+		root = filepath.Join(runtimeDir, "operator-data")
 	}
 
 	imageDir := filepath.Join(root, "images")
@@ -264,12 +265,31 @@ func ensureOperatorCacheDir(baseDir string) (string, error) {
 	return root, nil
 }
 
+func resolveAppRuntimeDir() (string, error) {
+	workingDir, err := os.Getwd()
+	if err == nil {
+		return workingDir, nil
+	}
+
+	executablePath, execErr := os.Executable()
+	if execErr != nil {
+		return "", execErr
+	}
+	return filepath.Dir(executablePath), nil
+}
+
 func operatorCacheFilePath(baseDir string) string {
 	return filepath.Join(baseDir, operatorCacheFileName)
 }
 
 func operatorImageDir(baseDir string) string {
 	return filepath.Join(baseDir, "images")
+}
+
+func operatorAssetFilePath(baseDir string, assetPath string) string {
+	trimmed := strings.TrimPrefix(assetPath, operatorAssetURLBase)
+	trimmed = strings.TrimPrefix(path.Clean("/"+trimmed), "/")
+	return filepath.Join(baseDir, filepath.FromSlash(trimmed))
 }
 
 func saveOperatorCache(baseDir string, cache operatorCachePayload) error {
@@ -309,8 +329,8 @@ func cacheOperatorImages(client *http.Client, baseDir string, operators []Operat
 		if err != nil {
 			continue
 		}
-		result[index].LocalImagePath = localPath
-		result[index].LocalImageURL = localFileURL(localPath)
+		result[index].LocalImagePath = filepath.ToSlash(filepath.Join("images", filepath.Base(localPath)))
+		result[index].LocalImageURL = localAssetURL(result[index].LocalImagePath)
 	}
 
 	return result
@@ -364,19 +384,14 @@ func applyLocalImageURLs(baseDir string, operators []OperatorRecord) {
 			continue
 		}
 
-		if !filepath.IsAbs(operators[index].LocalImagePath) {
-			operators[index].LocalImagePath = filepath.Join(baseDir, operators[index].LocalImagePath)
-		}
-		operators[index].LocalImageURL = localFileURL(operators[index].LocalImagePath)
+		operators[index].LocalImagePath = filepath.ToSlash(operators[index].LocalImagePath)
+		operators[index].LocalImageURL = localAssetURL(operators[index].LocalImagePath)
 	}
 }
 
-func localFileURL(fullPath string) string {
-	normalized := filepath.ToSlash(fullPath)
-	if !strings.HasPrefix(normalized, "/") {
-		normalized = "/" + normalized
-	}
-	return (&url.URL{Scheme: "file", Path: normalized}).String()
+func localAssetURL(relativePath string) string {
+	cleanPath := path.Clean("/" + strings.TrimPrefix(filepath.ToSlash(relativePath), "/"))
+	return operatorAssetURLBase + strings.TrimPrefix(cleanPath, "/")
 }
 
 func sortOperatorRecords(records []OperatorRecord) {

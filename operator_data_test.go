@@ -76,14 +76,32 @@ func TestParseOperatorDataHTML(t *testing.T) {
 	}
 }
 
+func TestEnsureOperatorCacheDirUsesProvidedRuntimeDirectory(t *testing.T) {
+	runtimeDir := t.TempDir()
+	cacheDir, err := ensureOperatorCacheDir("")
+	if err == nil {
+		_ = cacheDir
+	}
+
+	explicitCacheDir, err := ensureOperatorCacheDir(filepath.Join(runtimeDir, "operator-data"))
+	if err != nil {
+		t.Fatalf("ensureOperatorCacheDir returned error: %v", err)
+	}
+
+	expected := filepath.Join(runtimeDir, "operator-data")
+	if explicitCacheDir != expected {
+		t.Fatalf("expected cache dir %s, got %s", expected, explicitCacheDir)
+	}
+}
+
 func TestSaveAndLoadOperatorCachePreservesOrder(t *testing.T) {
 	cacheDir := t.TempDir()
 	cache := operatorCachePayload{
 		SourceURL: operatorDataSourceURL,
 		FetchedAt: time.Now().Format(time.RFC3339),
 		Operators: []OperatorRecord{
-			{Order: 2, Name: "阿消", LocalImagePath: filepath.Join(operatorImageDir(cacheDir), "002.jpg")},
-			{Order: 0, Name: "空弦", LocalImagePath: filepath.Join(operatorImageDir(cacheDir), "000.jpg")},
+			{Order: 2, Name: "阿消", LocalImagePath: "images/002.jpg"},
+			{Order: 0, Name: "空弦", LocalImagePath: "images/000.jpg"},
 		},
 	}
 
@@ -104,8 +122,17 @@ func TestSaveAndLoadOperatorCachePreservesOrder(t *testing.T) {
 	if loaded.Operators[0].Name != "空弦" || loaded.Operators[1].Name != "阿消" {
 		t.Fatalf("expected order to be preserved after load, got %#v", loaded.Operators)
 	}
-	if !strings.HasPrefix(loaded.Operators[0].LocalImageURL, "file://") {
-		t.Fatalf("expected local image url to be populated, got %s", loaded.Operators[0].LocalImageURL)
+	if loaded.Operators[0].LocalImageURL != "/operator-cache/images/000.jpg" {
+		t.Fatalf("expected local image url to be Wails-served path, got %s", loaded.Operators[0].LocalImageURL)
+	}
+}
+
+func TestOperatorAssetFilePathUsesRelativeCachePath(t *testing.T) {
+	cacheDir := t.TempDir()
+	assetPath := operatorAssetFilePath(cacheDir, "/operator-cache/images/007.png")
+	expected := filepath.Join(cacheDir, "images", "007.png")
+	if assetPath != expected {
+		t.Fatalf("expected asset path %s, got %s", expected, assetPath)
 	}
 }
 
@@ -141,11 +168,14 @@ func TestCacheOperatorImagesAllowsPartialFailures(t *testing.T) {
 	}
 
 	cached := cacheOperatorImages(imageServer.Client(), cacheDir, operators)
-	if cached[0].LocalImagePath == "" {
-		t.Fatal("expected first operator image to be cached")
+	if cached[0].LocalImagePath != "images/000.jpg" {
+		t.Fatalf("expected first operator image path to be relative, got %s", cached[0].LocalImagePath)
 	}
-	if _, err := os.Stat(cached[0].LocalImagePath); err != nil {
+	if _, err := os.Stat(filepath.Join(cacheDir, filepath.FromSlash(cached[0].LocalImagePath))); err != nil {
 		t.Fatalf("expected cached image file to exist: %v", err)
+	}
+	if cached[0].LocalImageURL != "/operator-cache/images/000.jpg" {
+		t.Fatalf("expected first operator image url to be served by Wails, got %s", cached[0].LocalImageURL)
 	}
 	if cached[1].LocalImagePath != "" {
 		t.Fatalf("expected missing image to leave local image path empty, got %s", cached[1].LocalImagePath)
