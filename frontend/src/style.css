@@ -1,5 +1,8 @@
 body {
     margin: 0;
+    font-family: "Nunito", "Segoe UI", sans-serif;
+    background: #efe4d2;
+    color: #1e2127;
 }
 
 @font-face {
@@ -12,4 +15,11 @@ body {
 
 #app {
     height: 100vh;
+}
+
+button,
+input,
+textarea,
+select {
+    font: inherit;
 }
