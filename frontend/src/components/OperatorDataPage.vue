@@ -1,4 +1,4 @@
-﻿<template>
+<template>
     <div class="operator-page">
         <section class="hero-card panel">
             <div>
@@ -121,15 +121,17 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { FetchOperatorData, LoadCachedOperatorData } from '../../wailsjs/go/main/App'
+import { FetchOperatorData, GetCachedOperatorImage, LoadCachedOperatorData } from '../../wailsjs/go/main/App'
 
 const operators = ref([])
+const operatorImageSources = ref({})
 const loading = ref(false)
 const hasLoaded = ref(false)
 const errorMessage = ref('')
 const sourceUrl = ref('https://wiki.biligame.com/arknights/公开招募工具')
 const fetchedAt = ref('')
 const fromCache = ref(false)
+let imageRequestToken = 0
 
 const publicRecruitableCount = computed(() => operators.value.filter((item) => item.isPublicRecruitable).length)
 const highestRarityLabel = computed(() => {
@@ -141,16 +143,52 @@ const highestRarityLabel = computed(() => {
 const sourceModeLabel = computed(() => (fromCache.value ? '本地缓存' : '远程刷新结果'))
 const fetchedAtLabel = computed(() => (fetchedAt.value ? new Date(fetchedAt.value).toLocaleString() : '-'))
 
-function applyResult(result) {
+async function applyResult(result) {
     operators.value = Array.isArray(result.operators) ? result.operators : []
     sourceUrl.value = result.sourceUrl || sourceUrl.value
     fetchedAt.value = result.fetchedAt || ''
     fromCache.value = Boolean(result.fromCache)
     hasLoaded.value = Boolean(result.cacheAvailable || operators.value.length)
+    await loadOperatorImages(operators.value)
 }
 
 function operatorImage(operator) {
-    return operator.localImageUrl || operator.remoteImageUrl || ''
+    if (!operator?.localImagePath) {
+        return ''
+    }
+    return operatorImageSources.value[operator.localImagePath] || ''
+}
+
+async function loadOperatorImages(records) {
+    const currentToken = ++imageRequestToken
+    operatorImageSources.value = {}
+
+    const uniquePaths = [...new Set(records.map((item) => item.localImagePath).filter(Boolean))]
+    if (!uniquePaths.length) {
+        return
+    }
+
+    const resolvedEntries = await Promise.all(uniquePaths.map(async (relativePath) => {
+        try {
+            const result = await GetCachedOperatorImage(relativePath)
+            if (!result?.found || !result.dataBase64) {
+                return [relativePath, '']
+            }
+            const mimeType = result.mimeType || 'image/jpeg'
+            return [relativePath, `data:${mimeType};base64,${result.dataBase64}`]
+        } catch (error) {
+            console.error(`加载干员图片失败: ${relativePath}`, error)
+            return [relativePath, '']
+        }
+    }))
+
+    if (currentToken !== imageRequestToken) {
+        return
+    }
+
+    operatorImageSources.value = Object.fromEntries(
+        resolvedEntries.filter(([, imageSource]) => Boolean(imageSource))
+    )
 }
 
 async function loadCache() {
@@ -160,9 +198,10 @@ async function loadCache() {
     try {
         const result = await LoadCachedOperatorData()
         if (result.cacheAvailable) {
-            applyResult(result)
+            await applyResult(result)
         } else {
             hasLoaded.value = false
+            operatorImageSources.value = {}
         }
     } catch (error) {
         console.error('加载本地缓存失败:', error)
@@ -178,7 +217,7 @@ async function handleFetch() {
 
     try {
         const result = await FetchOperatorData()
-        applyResult(result)
+        await applyResult(result)
         ElMessage.success(`已刷新 ${operators.value.length} 条干员数据，本地缓存已更新`)
     } catch (error) {
         console.error('刷新远程数据失败:', error)

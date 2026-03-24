@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/http"
 	"runtime"
 	"sync"
 	"syscall"
@@ -106,9 +105,6 @@ func main() {
 		Height: 768,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
-			Handler: http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-				operatorAssetHandler{}.ServeHTTP(rw, req)
-			}),
 		},
 		Bind: []any{app},
 	})

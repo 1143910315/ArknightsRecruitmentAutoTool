@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,9 +21,8 @@ import (
 )
 
 const (
-	operatorDataSourceURL = "https://wiki.biligame.com/arknights/公开招募工具"
+	operatorDataSourceURL = "https://wiki.biligame.com/arknights/\u516c\u5f00\u62db\u52df\u5de5\u5177"
 	operatorCacheFileName = "operators.json"
-	operatorAssetURLBase  = "/operator-cache/"
 )
 
 var errOperatorCacheNotFound = errors.New("operator cache not found")
@@ -57,6 +57,12 @@ type FetchOperatorDataResult struct {
 	Operators      []OperatorRecord `json:"operators"`
 	FromCache      bool             `json:"fromCache"`
 	CacheAvailable bool             `json:"cacheAvailable"`
+}
+
+type CachedOperatorImageResult struct {
+	Found      bool   `json:"found"`
+	MimeType   string `json:"mimeType"`
+	DataBase64 string `json:"dataBase64"`
 }
 
 type operatorCachePayload struct {
@@ -113,6 +119,10 @@ func (a *App) LoadCachedOperatorData() (FetchOperatorDataResult, error) {
 	return loadCachedOperatorDataFromDir("")
 }
 
+func (a *App) GetCachedOperatorImage(relativePath string) (CachedOperatorImageResult, error) {
+	return loadCachedOperatorImageFromDir("", relativePath)
+}
+
 func loadCachedOperatorDataFromDir(baseDir string) (FetchOperatorDataResult, error) {
 	cacheDir, err := ensureOperatorCacheDir(baseDir)
 	if err != nil {
@@ -128,7 +138,7 @@ func loadCachedOperatorDataFromDir(baseDir string) (FetchOperatorDataResult, err
 	}
 
 	sortOperatorRecords(cache.Operators)
-	applyLocalImageURLs(cacheDir, cache.Operators)
+	normalizeLocalImagePaths(cache.Operators)
 
 	return FetchOperatorDataResult{
 		SourceURL:      cache.SourceURL,
@@ -136,6 +146,32 @@ func loadCachedOperatorDataFromDir(baseDir string) (FetchOperatorDataResult, err
 		Operators:      cache.Operators,
 		FromCache:      true,
 		CacheAvailable: true,
+	}, nil
+}
+
+func loadCachedOperatorImageFromDir(baseDir string, relativePath string) (CachedOperatorImageResult, error) {
+	cacheDir, err := ensureOperatorCacheDir(baseDir)
+	if err != nil {
+		return CachedOperatorImageResult{}, fmt.Errorf("failed to resolve operator cache directory: %w", err)
+	}
+
+	imagePath, err := resolveCachedOperatorImagePath(cacheDir, relativePath)
+	if err != nil {
+		return CachedOperatorImageResult{}, err
+	}
+
+	imageBytes, err := os.ReadFile(imagePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return CachedOperatorImageResult{Found: false}, nil
+		}
+		return CachedOperatorImageResult{}, fmt.Errorf("failed to read cached operator image: %w", err)
+	}
+
+	return CachedOperatorImageResult{
+		Found:      true,
+		MimeType:   detectOperatorImageMimeType(imagePath, imageBytes),
+		DataBase64: base64.StdEncoding.EncodeToString(imageBytes),
 	}, nil
 }
 
@@ -197,7 +233,7 @@ func parseOperatorRecord(node *html.Node, order int) (OperatorRecord, error) {
 		Rarity:              rarity,
 		DisplayTags:         displayTags,
 		RemoteImageURL:      extractRemoteImageURL(node),
-		IsPublicRecruitable: contains(metadata.AcquisitionMethods, "公开招募"),
+		IsPublicRecruitable: contains(metadata.AcquisitionMethods, "\u516c\u5f00\u62db\u52df"),
 		Metadata:            metadata,
 	}, nil
 }
@@ -230,11 +266,11 @@ func parseOperatorMetadata(raw string, displayTags []string) OperatorMetadata {
 		}
 
 		switch {
-		case strings.Contains(part, "资深干员"):
+		case strings.Contains(part, "\u8d44\u6df1\u5e72\u5458"):
 			metadata.SeniorityTags = append(metadata.SeniorityTags, part)
 		case isAcquisitionField(part):
 			metadata.AcquisitionMethods = append(metadata.AcquisitionMethods, part)
-		case part == "是" || part == "否":
+		case part == "\u662f" || part == "\u5426":
 			metadata.Extra = append(metadata.Extra, part)
 		case metadata.Origin == "" && !isDisplayedTag(part, tagSet):
 			metadata.Origin = part
@@ -286,10 +322,31 @@ func operatorImageDir(baseDir string) string {
 	return filepath.Join(baseDir, "images")
 }
 
-func operatorAssetFilePath(baseDir string, assetPath string) string {
-	trimmed := strings.TrimPrefix(assetPath, operatorAssetURLBase)
-	trimmed = strings.TrimPrefix(path.Clean("/"+trimmed), "/")
-	return filepath.Join(baseDir, filepath.FromSlash(trimmed))
+func resolveCachedOperatorImagePath(baseDir string, relativePath string) (string, error) {
+	normalized := filepath.ToSlash(strings.TrimSpace(relativePath))
+	if normalized == "" {
+		return "", errors.New("cached operator image path is required")
+	}
+
+	normalized = strings.TrimPrefix(normalized, "/")
+	cleaned := path.Clean(normalized)
+	if cleaned == "." || cleaned == "" {
+		return "", errors.New("cached operator image path is invalid")
+	}
+	if strings.HasPrefix(cleaned, "../") || cleaned == ".." {
+		return "", errors.New("cached operator image path escapes cache directory")
+	}
+	fullPath := filepath.Join(baseDir, filepath.FromSlash(cleaned))
+
+	relativeToBase, err := filepath.Rel(baseDir, fullPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve cached operator image path: %w", err)
+	}
+	if strings.HasPrefix(relativeToBase, "..") {
+		return "", errors.New("cached operator image path escapes cache directory")
+	}
+
+	return fullPath, nil
 }
 
 func saveOperatorCache(baseDir string, cache operatorCachePayload) error {
@@ -330,7 +387,7 @@ func cacheOperatorImages(client *http.Client, baseDir string, operators []Operat
 			continue
 		}
 		result[index].LocalImagePath = filepath.ToSlash(filepath.Join("images", filepath.Base(localPath)))
-		result[index].LocalImageURL = localAssetURL(result[index].LocalImagePath)
+		result[index].LocalImageURL = ""
 	}
 
 	return result
@@ -378,20 +435,28 @@ func imageExtension(rawURL, contentType string) string {
 	return ".jpg"
 }
 
-func applyLocalImageURLs(baseDir string, operators []OperatorRecord) {
+func normalizeLocalImagePaths(operators []OperatorRecord) {
 	for index := range operators {
 		if operators[index].LocalImagePath == "" {
 			continue
 		}
 
 		operators[index].LocalImagePath = filepath.ToSlash(operators[index].LocalImagePath)
-		operators[index].LocalImageURL = localAssetURL(operators[index].LocalImagePath)
+		operators[index].LocalImageURL = ""
 	}
 }
 
-func localAssetURL(relativePath string) string {
-	cleanPath := path.Clean("/" + strings.TrimPrefix(filepath.ToSlash(relativePath), "/"))
-	return operatorAssetURLBase + strings.TrimPrefix(cleanPath, "/")
+func detectOperatorImageMimeType(imagePath string, imageBytes []byte) string {
+	extensionType := mime.TypeByExtension(strings.ToLower(filepath.Ext(imagePath)))
+	if extensionType != "" {
+		return extensionType
+	}
+
+	detected := http.DetectContentType(imageBytes)
+	if detected == "application/octet-stream" {
+		return "image/jpeg"
+	}
+	return detected
 }
 
 func sortOperatorRecords(records []OperatorRecord) {
@@ -449,11 +514,11 @@ func splitMetadata(raw string) []string {
 }
 
 func isAcquisitionField(value string) bool {
-	return value == "公开招募" ||
-		strings.Contains(value, "寻访") ||
-		strings.Contains(value, "获得") ||
-		strings.Contains(value, "掉落") ||
-		strings.Contains(value, "兑换")
+	return value == "\u516c\u5f00\u62db\u52df" ||
+		strings.Contains(value, "\u5bfb\u8bbf") ||
+		strings.Contains(value, "\u83b7\u5f97") ||
+		strings.Contains(value, "\u6389\u843d") ||
+		strings.Contains(value, "\u5151\u6362")
 }
 
 func isDisplayedTag(value string, tagSet map[string]struct{}) bool {

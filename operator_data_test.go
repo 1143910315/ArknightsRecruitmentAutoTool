@@ -1,29 +1,29 @@
 package main
 
 import (
+	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"net/http"
-	"net/http/httptest"
 )
 
 func TestParseOperatorDataHTML(t *testing.T) {
 	const sampleHTML = `
 <div class="contentDetail" data-param1="狙击, 女, 6, , 高级资深干员, 拉特兰, 远程位, 输出, 中坚寻访, 公开招募, 否" data-param2="6">
-  <p class="picture"><img src="https://example.com/images/kroos.jpg" /><span class="picText">空弦</span></p>
-  <p class="tags"><span class="btn btn-default tagText"> 远程位</span><span class="btn btn-default tagText">输出</span></p>
+  <p class="picture"><img src="https://example.com/images/exusiai.jpg" /><span class="picText">空弦</span></p>
+  <p class="tags"><span class="btn btn-default tagText">远程位</span><span class="btn btn-default tagText">输出</span></p>
 </div>
 <div class="contentDetail" data-param1="近卫, 女, 5, 资深干员, , 哥伦比亚, 近战位, 输出, 防护, 公开招募, 中坚寻访, 是" data-param2="5">
   <p class="picture"><img src="https://example.com/images/indra.png" /><span class="picText">星极</span></p>
-  <p class="tags"><span class="btn btn-default tagText"> 近战位</span><span class="btn btn-default tagText">输出</span><span class="btn btn-default tagText">防护</span></p>
+  <p class="tags"><span class="btn btn-default tagText">近战位</span><span class="btn btn-default tagText">输出</span><span class="btn btn-default tagText">防护</span></p>
 </div>
 <div class="contentDetail" data-param1="特种, 女, 4, , , 炎-龙门, 位移, 近战位, 关卡1-12首次通关掉落, 公开招募, 标准寻访, 中坚寻访, 主题曲获得, 否" data-param2="4">
   <p class="picture"><img src="https://example.com/images/shaw.webp" /><span class="picText">阿消</span></p>
-  <p class="tags"><span class="btn btn-default tagText"> 位移</span><span class="btn btn-default tagText">近战位</span></p>
+  <p class="tags"><span class="btn btn-default tagText">位移</span><span class="btn btn-default tagText">近战位</span></p>
 </div>`
 
 	operators, err := parseOperatorDataHTML(strings.NewReader(sampleHTML))
@@ -45,7 +45,7 @@ func TestParseOperatorDataHTML(t *testing.T) {
 	if first.Rarity != 6 {
 		t.Fatalf("expected rarity 6, got %d", first.Rarity)
 	}
-	if first.RemoteImageURL != "https://example.com/images/kroos.jpg" {
+	if first.RemoteImageURL != "https://example.com/images/exusiai.jpg" {
 		t.Fatalf("unexpected remote image url: %s", first.RemoteImageURL)
 	}
 	if !first.IsPublicRecruitable {
@@ -78,11 +78,6 @@ func TestParseOperatorDataHTML(t *testing.T) {
 
 func TestEnsureOperatorCacheDirUsesProvidedRuntimeDirectory(t *testing.T) {
 	runtimeDir := t.TempDir()
-	cacheDir, err := ensureOperatorCacheDir("")
-	if err == nil {
-		_ = cacheDir
-	}
-
 	explicitCacheDir, err := ensureOperatorCacheDir(filepath.Join(runtimeDir, "operator-data"))
 	if err != nil {
 		t.Fatalf("ensureOperatorCacheDir returned error: %v", err)
@@ -100,8 +95,8 @@ func TestSaveAndLoadOperatorCachePreservesOrder(t *testing.T) {
 		SourceURL: operatorDataSourceURL,
 		FetchedAt: time.Now().Format(time.RFC3339),
 		Operators: []OperatorRecord{
-			{Order: 2, Name: "阿消", LocalImagePath: "images/002.jpg"},
-			{Order: 0, Name: "空弦", LocalImagePath: "images/000.jpg"},
+			{Order: 2, Name: "阿消", LocalImagePath: filepath.Join("images", "002.jpg")},
+			{Order: 0, Name: "空弦", LocalImagePath: filepath.Join("images", "000.jpg")},
 		},
 	}
 
@@ -122,17 +117,81 @@ func TestSaveAndLoadOperatorCachePreservesOrder(t *testing.T) {
 	if loaded.Operators[0].Name != "空弦" || loaded.Operators[1].Name != "阿消" {
 		t.Fatalf("expected order to be preserved after load, got %#v", loaded.Operators)
 	}
-	if loaded.Operators[0].LocalImageURL != "/operator-cache/images/000.jpg" {
-		t.Fatalf("expected local image url to be Wails-served path, got %s", loaded.Operators[0].LocalImageURL)
+	if loaded.Operators[0].LocalImagePath != "images/000.jpg" {
+		t.Fatalf("expected local image path to be normalized, got %s", loaded.Operators[0].LocalImagePath)
+	}
+	if loaded.Operators[0].LocalImageURL != "" {
+		t.Fatalf("expected local image url to stay empty, got %s", loaded.Operators[0].LocalImageURL)
 	}
 }
 
-func TestOperatorAssetFilePathUsesRelativeCachePath(t *testing.T) {
+func TestResolveCachedOperatorImagePathUsesRelativeCachePath(t *testing.T) {
 	cacheDir := t.TempDir()
-	assetPath := operatorAssetFilePath(cacheDir, "/operator-cache/images/007.png")
+	imagePath, err := resolveCachedOperatorImagePath(cacheDir, "images/007.png")
+	if err != nil {
+		t.Fatalf("resolveCachedOperatorImagePath returned error: %v", err)
+	}
+
 	expected := filepath.Join(cacheDir, "images", "007.png")
-	if assetPath != expected {
-		t.Fatalf("expected asset path %s, got %s", expected, assetPath)
+	if imagePath != expected {
+		t.Fatalf("expected image path %s, got %s", expected, imagePath)
+	}
+}
+
+func TestLoadCachedOperatorImageFromDirReturnsBase64AndMimeType(t *testing.T) {
+	cacheDir, err := ensureOperatorCacheDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("ensureOperatorCacheDir returned error: %v", err)
+	}
+
+	imageBytes := []byte("gif-image-data")
+	imagePath := filepath.Join(cacheDir, "images", "000.gif")
+	if err := os.WriteFile(imagePath, imageBytes, 0o644); err != nil {
+		t.Fatalf("failed to write test image: %v", err)
+	}
+
+	result, err := loadCachedOperatorImageFromDir(cacheDir, "images/000.gif")
+	if err != nil {
+		t.Fatalf("loadCachedOperatorImageFromDir returned error: %v", err)
+	}
+	if !result.Found {
+		t.Fatal("expected cached image to be found")
+	}
+	if result.MimeType != "image/gif" {
+		t.Fatalf("expected mime type image/gif, got %s", result.MimeType)
+	}
+	if result.DataBase64 != base64.StdEncoding.EncodeToString(imageBytes) {
+		t.Fatalf("unexpected base64 payload: %s", result.DataBase64)
+	}
+}
+
+func TestLoadCachedOperatorImageFromDirReturnsNotFoundForMissingImage(t *testing.T) {
+	cacheDir, err := ensureOperatorCacheDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("ensureOperatorCacheDir returned error: %v", err)
+	}
+
+	result, err := loadCachedOperatorImageFromDir(cacheDir, "images/missing.jpg")
+	if err != nil {
+		t.Fatalf("expected missing image to avoid fatal error, got %v", err)
+	}
+	if result.Found {
+		t.Fatalf("expected missing image result, got %+v", result)
+	}
+	if result.MimeType != "" || result.DataBase64 != "" {
+		t.Fatalf("expected empty payload for missing image, got %+v", result)
+	}
+}
+
+func TestLoadCachedOperatorImageFromDirRejectsEscapingCacheDirectory(t *testing.T) {
+	cacheDir, err := ensureOperatorCacheDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("ensureOperatorCacheDir returned error: %v", err)
+	}
+
+	_, err = loadCachedOperatorImageFromDir(cacheDir, "../outside.jpg")
+	if err == nil {
+		t.Fatal("expected escaping path to fail")
 	}
 }
 
@@ -174,8 +233,8 @@ func TestCacheOperatorImagesAllowsPartialFailures(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(cacheDir, filepath.FromSlash(cached[0].LocalImagePath))); err != nil {
 		t.Fatalf("expected cached image file to exist: %v", err)
 	}
-	if cached[0].LocalImageURL != "/operator-cache/images/000.jpg" {
-		t.Fatalf("expected first operator image url to be served by Wails, got %s", cached[0].LocalImageURL)
+	if cached[0].LocalImageURL != "" {
+		t.Fatalf("expected first operator image url to remain empty, got %s", cached[0].LocalImageURL)
 	}
 	if cached[1].LocalImagePath != "" {
 		t.Fatalf("expected missing image to leave local image path empty, got %s", cached[1].LocalImagePath)
