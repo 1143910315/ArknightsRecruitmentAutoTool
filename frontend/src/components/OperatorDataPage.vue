@@ -1,20 +1,22 @@
-<template>
+﻿<template>
     <div class="operator-page">
-        <section class="hero-card">
+        <section class="hero-card panel">
             <div>
-                <p class="section-kicker">Recruitment Dataset</p>
+                <p class="section-kicker">Operator Cache</p>
                 <h2>公开招募干员数据</h2>
                 <p class="summary">
-                    从 biligame wiki 的公开招募工具页面抓取 `.contentDetail` 条目，解析干员名、星级、标签和原始元数据。
+                    打开页面时优先读取本地缓存；手动刷新时会重新抓取 wiki 页面，并将结构化数据和图片写回本地。
                 </p>
             </div>
 
             <div class="hero-actions">
-                <button class="fetch-button" type="button" :disabled="loading" @click="handleFetch">
-                    {{ loading ? '获取中…' : '获取干员数据' }}
+                <button class="primary-button" type="button" :disabled="loading" @click="handleFetch">
+                    {{ loading ? '刷新中…' : '刷新远程数据' }}
                 </button>
                 <p class="meta-text">当前记录数: {{ operators.length }}</p>
-                <p class="meta-text">来源: {{ sourceUrl }}</p>
+                <p class="meta-text">当前来源: {{ sourceModeLabel }}</p>
+                <p class="meta-text">抓取时间: {{ fetchedAtLabel }}</p>
+                <p class="meta-text">来源地址: {{ sourceUrl }}</p>
             </div>
         </section>
 
@@ -22,16 +24,16 @@
             {{ errorMessage }}
         </el-alert>
 
-        <section v-if="!hasLoaded && !loading" class="empty-state panel">
-            <p class="section-kicker">Empty</p>
-            <h3>当前还没有干员数据</h3>
-            <p>点击“获取干员数据”后，页面会从公开招募工具抓取并解析全部干员条目。</p>
+        <section v-if="loading && !hasLoaded" class="panel empty-state">
+            <p class="section-kicker">Loading</p>
+            <h3>正在加载本地缓存或远程数据</h3>
+            <p>页面会先尝试读取本地缓存，只有手动刷新时才请求远程 wiki 页面。</p>
         </section>
 
-        <section v-else-if="loading && !operators.length" class="empty-state panel">
-            <p class="section-kicker">Loading</p>
-            <h3>正在抓取页面并解析干员数据</h3>
-            <p>这一步会请求 wiki 页面，再把 HTML 中的 `.contentDetail` 条目转换为结构化记录。</p>
+        <section v-else-if="!hasLoaded" class="panel empty-state">
+            <p class="section-kicker">Empty</p>
+            <h3>当前还没有本地缓存数据</h3>
+            <p>点击“刷新远程数据”后，会从 wiki 抓取干员数据并把数据和图片保存到本地。</p>
         </section>
 
         <section v-else class="data-layout">
@@ -66,6 +68,8 @@
                     <table>
                         <thead>
                             <tr>
+                                <th>顺序</th>
+                                <th>图片</th>
                                 <th>名称</th>
                                 <th>星级</th>
                                 <th>标签</th>
@@ -74,7 +78,17 @@
                             </tr>
                         </thead>
                         <tbody>
-                            <tr v-for="operator in operators" :key="operator.name">
+                            <tr v-for="operator in operators" :key="`${operator.order}-${operator.name}`">
+                                <td>{{ operator.order + 1 }}</td>
+                                <td>
+                                    <img
+                                        v-if="operatorImage(operator)"
+                                        class="operator-image"
+                                        :src="operatorImage(operator)"
+                                        :alt="operator.name"
+                                    >
+                                    <div v-else class="image-fallback">无图</div>
+                                </td>
                                 <td>
                                     <div class="name-cell">
                                         <span class="name">{{ operator.name }}</span>
@@ -105,15 +119,17 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { FetchOperatorData } from '../../wailsjs/go/main/App'
+import { FetchOperatorData, LoadCachedOperatorData } from '../../wailsjs/go/main/App'
 
 const operators = ref([])
 const loading = ref(false)
 const hasLoaded = ref(false)
 const errorMessage = ref('')
 const sourceUrl = ref('https://wiki.biligame.com/arknights/公开招募工具')
+const fetchedAt = ref('')
+const fromCache = ref(false)
 
 const publicRecruitableCount = computed(() => operators.value.filter((item) => item.isPublicRecruitable).length)
 const highestRarityLabel = computed(() => {
@@ -122,6 +138,39 @@ const highestRarityLabel = computed(() => {
     }
     return `${Math.max(...operators.value.map((item) => item.rarity))} 星`
 })
+const sourceModeLabel = computed(() => (fromCache.value ? '本地缓存' : '远程刷新结果'))
+const fetchedAtLabel = computed(() => (fetchedAt.value ? new Date(fetchedAt.value).toLocaleString() : '-'))
+
+function applyResult(result) {
+    operators.value = Array.isArray(result.operators) ? result.operators : []
+    sourceUrl.value = result.sourceUrl || sourceUrl.value
+    fetchedAt.value = result.fetchedAt || ''
+    fromCache.value = Boolean(result.fromCache)
+    hasLoaded.value = Boolean(result.cacheAvailable || operators.value.length)
+}
+
+function operatorImage(operator) {
+    return operator.localImageUrl || operator.remoteImageUrl || ''
+}
+
+async function loadCache() {
+    loading.value = true
+    errorMessage.value = ''
+
+    try {
+        const result = await LoadCachedOperatorData()
+        if (result.cacheAvailable) {
+            applyResult(result)
+        } else {
+            hasLoaded.value = false
+        }
+    } catch (error) {
+        console.error('加载本地缓存失败:', error)
+        errorMessage.value = typeof error === 'string' ? error : error?.message || '加载本地缓存失败'
+    } finally {
+        loading.value = false
+    }
+}
 
 async function handleFetch() {
     loading.value = true
@@ -129,18 +178,20 @@ async function handleFetch() {
 
     try {
         const result = await FetchOperatorData()
-        operators.value = result.operators ?? []
-        sourceUrl.value = result.sourceUrl || sourceUrl.value
-        hasLoaded.value = true
-        ElMessage.success(`已获取 ${operators.value.length} 条干员数据`)
+        applyResult(result)
+        ElMessage.success(`已刷新 ${operators.value.length} 条干员数据，本地缓存已更新`)
     } catch (error) {
-        console.error('获取干员数据失败:', error)
-        errorMessage.value = typeof error === 'string' ? error : error?.message || '获取干员数据失败'
+        console.error('刷新远程数据失败:', error)
+        errorMessage.value = typeof error === 'string' ? error : error?.message || '刷新远程数据失败'
         ElMessage.error(errorMessage.value)
     } finally {
         loading.value = false
     }
 }
+
+onMounted(() => {
+    loadCache()
+})
 </script>
 
 <style scoped>
@@ -149,15 +200,14 @@ async function handleFetch() {
     gap: 1.25rem;
 }
 
-.hero-card,
 .panel {
     border-radius: 1.5rem;
-    background: rgba(255, 251, 245, 0.84);
+    background: rgba(255, 255, 255, 0.82);
     box-shadow:
-        0 18px 60px rgba(95, 68, 51, 0.12),
-        inset 0 1px 0 rgba(255, 255, 255, 0.8);
+        0 18px 52px rgba(101, 157, 212, 0.14),
+        inset 0 1px 0 rgba(255, 255, 255, 0.92);
     padding: 1.25rem;
-    backdrop-filter: blur(18px);
+    backdrop-filter: blur(14px);
 }
 
 .hero-card {
@@ -173,7 +223,7 @@ async function handleFetch() {
 }
 
 .section-kicker {
-    color: #a47460;
+    color: #5f8fbf;
     font-size: 0.76rem;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -186,7 +236,7 @@ h3 {
 
 .summary {
     max-width: 44rem;
-    color: #5f5148;
+    color: #55728f;
 }
 
 .hero-actions {
@@ -196,25 +246,25 @@ h3 {
     min-width: 17rem;
 }
 
-.fetch-button {
+.primary-button {
     border: 0;
     border-radius: 999px;
     padding: 0.85rem 1.2rem;
-    background: linear-gradient(135deg, #c96b4b 0%, #efb37d 100%);
-    color: #17191d;
+    background: linear-gradient(135deg, #5ba9ff 0%, #8fd0ff 100%);
+    color: #0d2a44;
     font: inherit;
     font-weight: 700;
     cursor: pointer;
 }
 
-.fetch-button:disabled {
+.primary-button:disabled {
     cursor: wait;
     opacity: 0.72;
 }
 
 .meta-text {
     text-align: right;
-    color: #7d685d;
+    color: #6d89a4;
     word-break: break-all;
 }
 
@@ -224,7 +274,7 @@ h3 {
 
 .empty-state {
     text-align: center;
-    color: #5f5148;
+    color: #55728f;
 }
 
 .data-layout {
@@ -241,13 +291,13 @@ h3 {
 .stat-card {
     padding: 1rem;
     border-radius: 1rem;
-    background: rgba(99, 83, 73, 0.08);
+    background: rgba(91, 169, 255, 0.08);
     display: grid;
     gap: 0.35rem;
 }
 
 .stat-label {
-    color: #7d685d;
+    color: #6d89a4;
     font-size: 0.9rem;
 }
 
@@ -263,14 +313,35 @@ table {
 th,
 td {
     padding: 0.9rem 0.75rem;
-    border-bottom: 1px solid rgba(30, 33, 39, 0.08);
+    border-bottom: 1px solid rgba(91, 169, 255, 0.12);
     text-align: left;
     vertical-align: top;
 }
 
 th {
-    color: #7d685d;
+    color: #6d89a4;
     font-weight: 700;
+}
+
+.operator-image,
+.image-fallback {
+    width: 52px;
+    height: 52px;
+    border-radius: 0.9rem;
+}
+
+.operator-image {
+    display: block;
+    object-fit: cover;
+    background: rgba(91, 169, 255, 0.08);
+}
+
+.image-fallback {
+    display: grid;
+    place-items: center;
+    background: rgba(91, 169, 255, 0.1);
+    color: #6d89a4;
+    font-size: 0.82rem;
 }
 
 .name-cell {
@@ -283,7 +354,7 @@ th {
 }
 
 .name-meta {
-    color: #8f7c70;
+    color: #7a97b4;
     font-size: 0.88rem;
 }
 
@@ -298,8 +369,8 @@ th {
     align-items: center;
     border-radius: 999px;
     padding: 0.3rem 0.65rem;
-    background: rgba(201, 107, 75, 0.14);
-    color: #744833;
+    background: rgba(91, 169, 255, 0.14);
+    color: #2d628f;
     font-size: 0.86rem;
 }
 

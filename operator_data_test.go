@@ -1,29 +1,29 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"net/http"
+	"net/http/httptest"
 )
 
 func TestParseOperatorDataHTML(t *testing.T) {
 	const sampleHTML = `
 <div class="contentDetail" data-param1="狙击, 女, 6, , 高级资深干员, 拉特兰, 远程位, 输出, 中坚寻访, 公开招募, 否" data-param2="6">
-<p class="picture"><a href="/arknights/%E7%A9%BA%E5%BC%A6" title="空弦" class="pic-star-6"><img alt="空弦hd.jpg" src="https://patchwiki.biligame.com/images/arknights/thumb/f/fe/rzrnsqjorinzm92f3da769vwsghca32.jpg/60px-%E7%A9%BA%E5%BC%A6hd.jpg" decoding="async" loading="lazy" width="60" height="60" srcset="https://patchwiki.biligame.com/images/arknights/thumb/f/fe/rzrnsqjorinzm92f3da769vwsghca32.jpg/90px-%E7%A9%BA%E5%BC%A6hd.jpg 1.5x, https://patchwiki.biligame.com/images/arknights/thumb/f/fe/rzrnsqjorinzm92f3da769vwsghca32.jpg/120px-%E7%A9%BA%E5%BC%A6hd.jpg 2x" data-file-width="180" data-file-height="180"></a><span class="picText">空弦</span></p>
-<p class="tags">
-<span class="btn btn-default tagText"> 远程位</span><span class="btn btn-default tagText">输出</span>
-</p>
+  <p class="picture"><img src="https://example.com/images/kroos.jpg" /><span class="picText">空弦</span></p>
+  <p class="tags"><span class="btn btn-default tagText"> 远程位</span><span class="btn btn-default tagText">输出</span></p>
 </div>
 <div class="contentDetail" data-param1="近卫, 女, 5, 资深干员, , 哥伦比亚, 近战位, 输出, 防护, 公开招募, 中坚寻访, 是" data-param2="5">
-<p class="picture"><a href="/arknights/%E6%98%9F%E6%9E%81" title="星极" class="pic-star-5"><img alt="星极hd.jpg" src="https://patchwiki.biligame.com/images/arknights/thumb/0/03/cedol3f4khu0nmue3wozfs6z2gcp0xg.jpg/60px-%E6%98%9F%E6%9E%81hd.jpg" decoding="async" loading="lazy" width="60" height="60" srcset="https://patchwiki.biligame.com/images/arknights/thumb/0/03/cedol3f4khu0nmue3wozfs6z2gcp0xg.jpg/90px-%E6%98%9F%E6%9E%81hd.jpg 1.5x, https://patchwiki.biligame.com/images/arknights/thumb/0/03/cedol3f4khu0nmue3wozfs6z2gcp0xg.jpg/120px-%E6%98%9F%E6%9E%81hd.jpg 2x" data-file-width="180" data-file-height="180"></a><span class="picText">星极</span></p>
-<p class="tags">
-<span class="btn btn-default tagText"> 近战位</span><span class="btn btn-default tagText">输出</span><span class="btn btn-default tagText">防护</span>
-</p>
+  <p class="picture"><img src="https://example.com/images/indra.png" /><span class="picText">星极</span></p>
+  <p class="tags"><span class="btn btn-default tagText"> 近战位</span><span class="btn btn-default tagText">输出</span><span class="btn btn-default tagText">防护</span></p>
 </div>
 <div class="contentDetail" data-param1="特种, 女, 4, , , 炎-龙门, 位移, 近战位, 关卡1-12首次通关掉落, 公开招募, 标准寻访, 中坚寻访, 主题曲获得, 否" data-param2="4">
-<p class="picture"><a href="/arknights/%E9%98%BF%E6%B6%88" title="阿消" class="pic-star-4"><img alt="阿消hd.jpg" src="https://patchwiki.biligame.com/images/arknights/thumb/1/1a/jsuvpeoduxn9ne07oc8c7s7vwngz4sl.jpg/60px-%E9%98%BF%E6%B6%88hd.jpg" decoding="async" loading="lazy" width="60" height="60" srcset="https://patchwiki.biligame.com/images/arknights/thumb/1/1a/jsuvpeoduxn9ne07oc8c7s7vwngz4sl.jpg/90px-%E9%98%BF%E6%B6%88hd.jpg 1.5x, https://patchwiki.biligame.com/images/arknights/thumb/1/1a/jsuvpeoduxn9ne07oc8c7s7vwngz4sl.jpg/120px-%E9%98%BF%E6%B6%88hd.jpg 2x" data-file-width="180" data-file-height="180"></a><span class="picText">阿消</span></p>
-<p class="tags">
-<span class="btn btn-default tagText"> 位移</span><span class="btn btn-default tagText">近战位</span>
-</p>
+  <p class="picture"><img src="https://example.com/images/shaw.webp" /><span class="picText">阿消</span></p>
+  <p class="tags"><span class="btn btn-default tagText"> 位移</span><span class="btn btn-default tagText">近战位</span></p>
 </div>`
 
 	operators, err := parseOperatorDataHTML(strings.NewReader(sampleHTML))
@@ -36,11 +36,17 @@ func TestParseOperatorDataHTML(t *testing.T) {
 	}
 
 	first := operators[0]
+	if first.Order != 0 {
+		t.Fatalf("expected first operator order to be 0, got %d", first.Order)
+	}
 	if first.Name != "空弦" {
 		t.Fatalf("expected first operator to be 空弦, got %s", first.Name)
 	}
 	if first.Rarity != 6 {
 		t.Fatalf("expected rarity 6, got %d", first.Rarity)
+	}
+	if first.RemoteImageURL != "https://example.com/images/kroos.jpg" {
+		t.Fatalf("unexpected remote image url: %s", first.RemoteImageURL)
 	}
 	if !first.IsPublicRecruitable {
 		t.Fatal("expected first operator to be public recruitable")
@@ -59,11 +65,90 @@ func TestParseOperatorDataHTML(t *testing.T) {
 	}
 
 	third := operators[2]
+	if third.Order != 2 {
+		t.Fatalf("expected third operator order to be 2, got %d", third.Order)
+	}
 	if !contains(third.Metadata.AcquisitionMethods, "关卡1-12首次通关掉落") {
 		t.Fatalf("expected acquisition method to be preserved, got %#v", third.Metadata.AcquisitionMethods)
 	}
 	if !contains(third.Metadata.AcquisitionMethods, "主题曲获得") {
 		t.Fatalf("expected theme unlock acquisition to be preserved, got %#v", third.Metadata.AcquisitionMethods)
+	}
+}
+
+func TestSaveAndLoadOperatorCachePreservesOrder(t *testing.T) {
+	cacheDir := t.TempDir()
+	cache := operatorCachePayload{
+		SourceURL: operatorDataSourceURL,
+		FetchedAt: time.Now().Format(time.RFC3339),
+		Operators: []OperatorRecord{
+			{Order: 2, Name: "阿消", LocalImagePath: filepath.Join(operatorImageDir(cacheDir), "002.jpg")},
+			{Order: 0, Name: "空弦", LocalImagePath: filepath.Join(operatorImageDir(cacheDir), "000.jpg")},
+		},
+	}
+
+	if err := saveOperatorCache(cacheDir, cache); err != nil {
+		t.Fatalf("saveOperatorCache returned error: %v", err)
+	}
+
+	loaded, err := loadCachedOperatorDataFromDir(cacheDir)
+	if err != nil {
+		t.Fatalf("loadCachedOperatorDataFromDir returned error: %v", err)
+	}
+	if !loaded.CacheAvailable || !loaded.FromCache {
+		t.Fatalf("expected cache result to indicate local cache usage: %+v", loaded)
+	}
+	if len(loaded.Operators) != 2 {
+		t.Fatalf("expected 2 operators, got %d", len(loaded.Operators))
+	}
+	if loaded.Operators[0].Name != "空弦" || loaded.Operators[1].Name != "阿消" {
+		t.Fatalf("expected order to be preserved after load, got %#v", loaded.Operators)
+	}
+	if !strings.HasPrefix(loaded.Operators[0].LocalImageURL, "file://") {
+		t.Fatalf("expected local image url to be populated, got %s", loaded.Operators[0].LocalImageURL)
+	}
+}
+
+func TestLoadCachedOperatorDataReturnsEmptyWhenCacheMissing(t *testing.T) {
+	loaded, err := loadCachedOperatorDataFromDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("expected missing cache to return nil error, got %v", err)
+	}
+	if loaded.CacheAvailable {
+		t.Fatalf("expected no cache to be available, got %+v", loaded)
+	}
+}
+
+func TestCacheOperatorImagesAllowsPartialFailures(t *testing.T) {
+	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ok.jpg" {
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("image-bytes"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer imageServer.Close()
+
+	cacheDir, err := ensureOperatorCacheDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("ensureOperatorCacheDir returned error: %v", err)
+	}
+
+	operators := []OperatorRecord{
+		{Order: 0, Name: "空弦", RemoteImageURL: imageServer.URL + "/ok.jpg"},
+		{Order: 1, Name: "阿消", RemoteImageURL: imageServer.URL + "/missing.jpg"},
+	}
+
+	cached := cacheOperatorImages(imageServer.Client(), cacheDir, operators)
+	if cached[0].LocalImagePath == "" {
+		t.Fatal("expected first operator image to be cached")
+	}
+	if _, err := os.Stat(cached[0].LocalImagePath); err != nil {
+		t.Fatalf("expected cached image file to exist: %v", err)
+	}
+	if cached[1].LocalImagePath != "" {
+		t.Fatalf("expected missing image to leave local image path empty, got %s", cached[1].LocalImagePath)
 	}
 }
 

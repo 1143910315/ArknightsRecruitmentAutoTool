@@ -1,32 +1,39 @@
-<template>
+﻿<template>
     <div class="app-shell">
-        <aside class="sidebar">
-            <div class="brand">
-                <div class="brand-mark">RH</div>
-                <div>
-                    <p class="brand-title">Recruit Helper</p>
-                    <p class="brand-subtitle">Arknights desktop toolkit</p>
+        <el-drawer v-model="drawerOpen" direction="ltr" size="280px" class="app-drawer">
+            <template #header>
+                <div class="drawer-header">
+                    <div class="brand-mark">RH</div>
+                    <div>
+                        <p class="brand-title">公开招募助手</p>
+                        <p class="brand-subtitle">桌面工作台</p>
+                    </div>
                 </div>
-            </div>
+            </template>
 
-            <nav class="nav-list" aria-label="Primary">
+            <nav class="drawer-nav" aria-label="Primary navigation">
                 <button
                     v-for="item in navigationItems"
                     :key="item.key"
-                    class="nav-item"
+                    class="drawer-nav-item"
                     :class="{ active: activePage === item.key }"
                     type="button"
-                    @click="activePage = item.key"
+                    @click="selectPage(item.key)"
                 >
                     <span class="nav-badge">{{ item.shortLabel }}</span>
                     <span>{{ item.label }}</span>
                 </button>
             </nav>
-        </aside>
+        </el-drawer>
 
-        <main class="content-panel">
-            <header class="page-header">
-                <div>
+        <main class="shell-main">
+            <header class="topbar">
+                <button class="menu-trigger" type="button" @click="drawerOpen = true">
+                    <span class="menu-trigger-label">MENU</span>
+                    <span>{{ activePageMeta.label }}</span>
+                </button>
+
+                <div class="topbar-copy">
                     <p class="eyebrow">Main View</p>
                     <h1>{{ activePageMeta.label }}</h1>
                     <p class="description">{{ activePageMeta.description }}</p>
@@ -57,43 +64,84 @@ const navigationItems = [
         key: 'operator-data',
         label: '干员数据',
         shortLabel: 'OD',
-        description: '抓取并浏览公开招募干员基础数据，为后续推荐逻辑做准备。',
+        description: '优先加载本地缓存的公开招募干员数据，并支持手动刷新。',
     },
 ]
 
+const drawerOpen = ref(false)
 const activePage = ref('window-tools')
 
 const activePageMeta = computed(() =>
     navigationItems.find((item) => item.key === activePage.value) ?? navigationItems[0],
 )
+
+function selectPage(pageKey) {
+    activePage.value = pageKey
+    drawerOpen.value = false
+}
 </script>
 
 <style scoped>
 .app-shell {
     min-height: 100vh;
-    display: grid;
-    grid-template-columns: 280px 1fr;
     background:
-        radial-gradient(circle at top left, rgba(184, 87, 65, 0.18), transparent 28%),
-        radial-gradient(circle at bottom right, rgba(39, 72, 102, 0.22), transparent 26%),
-        linear-gradient(135deg, #f3ede4 0%, #efe4d2 100%);
-    color: #1e2127;
+        radial-gradient(circle at top left, rgba(143, 205, 255, 0.55), transparent 28%),
+        radial-gradient(circle at bottom right, rgba(210, 235, 255, 0.8), transparent 34%),
+        linear-gradient(180deg, #f8fcff 0%, #edf6ff 100%);
+    color: #17324d;
 }
 
-.sidebar {
-    display: flex;
-    flex-direction: column;
-    gap: 1.5rem;
+:deep(.app-drawer .el-drawer) {
+    background: linear-gradient(180deg, #f5fbff 0%, #ebf5ff 100%);
+}
+
+:deep(.app-drawer .el-drawer__header) {
+    margin-bottom: 1rem;
+    padding-bottom: 0;
+}
+
+.shell-main {
     padding: 1.5rem;
-    background: rgba(26, 34, 43, 0.92);
-    color: #f7f3ea;
-    box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.08);
 }
 
-.brand {
+.topbar {
     display: flex;
+    align-items: flex-start;
+    gap: 1.25rem;
+    margin-bottom: 1.5rem;
+}
+
+.menu-trigger {
+    display: inline-flex;
     align-items: center;
     gap: 0.9rem;
+    min-width: 14rem;
+    border: 0;
+    border-radius: 999px;
+    padding: 0.95rem 1.2rem;
+    background: linear-gradient(135deg, #5ba9ff 0%, #8fd0ff 100%);
+    color: #0d2a44;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 14px 32px rgba(91, 169, 255, 0.24);
+}
+
+.menu-trigger-label {
+    display: inline-grid;
+    place-items: center;
+    min-width: 3rem;
+    height: 2rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.58);
+    font-size: 0.76rem;
+    letter-spacing: 0.08em;
+}
+
+.drawer-header {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
 }
 
 .brand-mark {
@@ -101,11 +149,11 @@ const activePageMeta = computed(() =>
     height: 3rem;
     display: grid;
     place-items: center;
-    border-radius: 0.9rem;
-    background: linear-gradient(135deg, #c96b4b 0%, #f3c08b 100%);
-    color: #1f2023;
+    border-radius: 1rem;
+    background: linear-gradient(135deg, #5ba9ff 0%, #a5deff 100%);
+    color: #0d2a44;
     font-weight: 800;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.06em;
 }
 
 .brand-title,
@@ -116,50 +164,45 @@ const activePageMeta = computed(() =>
 }
 
 .brand-title {
-    font-size: 1.1rem;
+    font-size: 1.08rem;
     font-weight: 700;
 }
 
 .brand-subtitle {
-    margin-top: 0.25rem;
-    font-size: 0.88rem;
-    color: rgba(247, 243, 234, 0.72);
+    margin-top: 0.15rem;
+    color: #6a86a0;
+    font-size: 0.9rem;
 }
 
-.nav-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.65rem;
+.drawer-nav {
+    display: grid;
+    gap: 0.75rem;
 }
 
-.nav-item {
+.drawer-nav-item {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: 0.8rem;
     width: 100%;
-    padding: 0.95rem 1rem;
     border: 0;
     border-radius: 1rem;
-    background: rgba(255, 255, 255, 0.06);
-    color: inherit;
+    padding: 0.95rem 1rem;
+    background: rgba(91, 169, 255, 0.08);
+    color: #17324d;
     font: inherit;
     cursor: pointer;
     text-align: left;
-    transition:
-        transform 0.18s ease,
-        background-color 0.18s ease,
-        box-shadow 0.18s ease;
+    transition: background-color 0.18s ease, transform 0.18s ease;
 }
 
-.nav-item:hover {
-    transform: translateX(3px);
-    background: rgba(255, 255, 255, 0.12);
+.drawer-nav-item:hover {
+    transform: translateX(2px);
+    background: rgba(91, 169, 255, 0.16);
 }
 
-.nav-item.active {
-    background: linear-gradient(135deg, rgba(201, 107, 75, 0.94), rgba(243, 192, 139, 0.9));
-    color: #151719;
-    box-shadow: 0 18px 30px rgba(24, 28, 35, 0.24);
+.drawer-nav-item.active {
+    background: linear-gradient(135deg, rgba(91, 169, 255, 0.96), rgba(171, 225, 255, 0.9));
+    color: #0d2a44;
 }
 
 .nav-badge {
@@ -168,28 +211,21 @@ const activePageMeta = computed(() =>
     display: inline-grid;
     place-items: center;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.15);
+    background: rgba(255, 255, 255, 0.62);
     font-size: 0.76rem;
     font-weight: 800;
     letter-spacing: 0.06em;
 }
 
-.content-panel {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    padding: 1.5rem;
-}
-
-.page-header {
-    padding: 0.25rem 0 1.4rem;
+.topbar-copy {
+    padding-top: 0.2rem;
 }
 
 .eyebrow {
     text-transform: uppercase;
     letter-spacing: 0.16em;
     font-size: 0.72rem;
-    color: #8a6858;
+    color: #6f93b2;
 }
 
 h1 {
@@ -199,33 +235,21 @@ h1 {
 }
 
 .description {
-    max-width: 44rem;
-    color: #5f5148;
+    max-width: 42rem;
+    color: #58728c;
 }
 
 .page-body {
     min-height: 0;
-    flex: 1;
 }
 
-@media (max-width: 960px) {
-    .app-shell {
-        grid-template-columns: 1fr;
+@media (max-width: 900px) {
+    .topbar {
+        flex-direction: column;
     }
 
-    .sidebar {
-        position: sticky;
-        top: 0;
-        z-index: 10;
-    }
-
-    .nav-list {
-        flex-direction: row;
-        flex-wrap: wrap;
-    }
-
-    .nav-item {
-        flex: 1 1 220px;
+    .menu-trigger {
+        min-width: 0;
     }
 }
 </style>

@@ -1,13 +1,13 @@
-<template>
+﻿<template>
     <div class="page-grid">
         <section class="panel panel-tree">
-                <div class="panel-heading">
-                    <div>
-                        <p class="section-kicker">Inspect</p>
-                        <h2>窗口树</h2>
-                    </div>
-                    <el-button size="small" @click="refreshTree">刷新</el-button>
+            <div class="panel-heading">
+                <div>
+                    <p class="section-kicker">Inspect</p>
+                    <h2>窗口树</h2>
                 </div>
+                <el-button size="small" @click="refreshTree">刷新</el-button>
+            </div>
 
             <el-tree
                 ref="treeRef"
@@ -76,7 +76,7 @@
                     </div>
                 </div>
                 <div v-else-if="selectedHwnd !== null" class="placeholder">加载窗口详情中…</div>
-                <div v-else class="placeholder">从左侧选择一个窗口以查看详情。</div>
+                <div v-else class="placeholder">从当前视图中选择一个窗口以查看详情。</div>
             </article>
 
             <article class="panel dual-panel">
@@ -366,12 +366,12 @@ onUnmounted(() => {
 .panel {
     min-width: 0;
     border-radius: 1.5rem;
-    background: rgba(255, 251, 245, 0.84);
+    background: rgba(255, 255, 255, 0.82);
     box-shadow:
-        0 18px 60px rgba(95, 68, 51, 0.12),
-        inset 0 1px 0 rgba(255, 255, 255, 0.8);
+        0 18px 52px rgba(101, 157, 212, 0.14),
+        inset 0 1px 0 rgba(255, 255, 255, 0.92);
     padding: 1.25rem;
-    backdrop-filter: blur(18px);
+    backdrop-filter: blur(14px);
 }
 
 .panel-tree {
@@ -394,7 +394,7 @@ onUnmounted(() => {
 
 .section-kicker {
     margin: 0 0 0.2rem;
-    color: #a47460;
+    color: #5f8fbf;
     font-size: 0.76rem;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -413,7 +413,7 @@ h3 {
 }
 
 .tree-node-icon {
-    color: #c96b4b;
+    color: #5ba9ff;
     flex-shrink: 0;
     font-size: 1.2rem;
     line-height: 1;
@@ -432,7 +432,7 @@ h3 {
 }
 
 .label {
-    color: #7d685d;
+    color: #6c88a3;
     font-weight: 700;
 }
 
@@ -453,8 +453,8 @@ h3 {
     padding: 0.7rem 1rem;
     font: inherit;
     cursor: pointer;
-    color: #1e2127;
-    background: rgba(201, 107, 75, 0.14);
+    color: #17324d;
+    background: rgba(91, 169, 255, 0.12);
     transition:
         transform 0.18s ease,
         background-color 0.18s ease;
@@ -462,7 +462,7 @@ h3 {
 
 .action:hover {
     transform: translateY(-1px);
-    background: rgba(201, 107, 75, 0.22);
+    background: rgba(91, 169, 255, 0.2);
 }
 
 .action:disabled {
@@ -471,8 +471,8 @@ h3 {
 }
 
 .action-emphasis {
-    background: linear-gradient(135deg, #c96b4b 0%, #efb37d 100%);
-    color: #17191d;
+    background: linear-gradient(135deg, #5ba9ff 0%, #8fd0ff 100%);
+    color: #0d2a44;
 }
 
 .child-list {
@@ -486,12 +486,12 @@ h3 {
     max-height: 220px;
     overflow: auto;
     border-radius: 1rem;
-    background: rgba(99, 83, 73, 0.08);
+    background: rgba(91, 169, 255, 0.08);
 }
 
 .child-list li {
     padding: 0.65rem 0.8rem;
-    border-bottom: 1px solid rgba(30, 33, 39, 0.08);
+    border-bottom: 1px solid rgba(91, 169, 255, 0.12);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -501,7 +501,7 @@ h3 {
 }
 
 .placeholder {
-    color: #7d685d;
+    color: #64819d;
 }
 
 .dual-panel {
@@ -517,7 +517,7 @@ h3 {
     min-height: 100%;
     padding: 1rem;
     border-radius: 1rem;
-    background: rgba(99, 83, 73, 0.08);
+    background: rgba(91, 169, 255, 0.08);
 }
 
 @media (max-width: 1100px) {

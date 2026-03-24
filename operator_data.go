@@ -1,10 +1,17 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"net/url"
+	"os"
+	"path"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -12,7 +19,12 @@ import (
 	"golang.org/x/net/html"
 )
 
-const operatorDataSourceURL = "https://wiki.biligame.com/arknights/公开招募工具"
+const (
+	operatorDataSourceURL = "https://wiki.biligame.com/arknights/公开招募工具"
+	operatorCacheFileName = "operators.json"
+)
+
+var errOperatorCacheNotFound = errors.New("operator cache not found")
 
 type OperatorMetadata struct {
 	Raw                []string `json:"raw"`
@@ -27,14 +39,26 @@ type OperatorMetadata struct {
 }
 
 type OperatorRecord struct {
+	Order               int              `json:"order"`
 	Name                string           `json:"name"`
 	Rarity              int              `json:"rarity"`
 	DisplayTags         []string         `json:"displayTags"`
+	RemoteImageURL      string           `json:"remoteImageUrl"`
+	LocalImagePath      string           `json:"localImagePath"`
+	LocalImageURL       string           `json:"localImageUrl"`
 	IsPublicRecruitable bool             `json:"isPublicRecruitable"`
 	Metadata            OperatorMetadata `json:"metadata"`
 }
 
 type FetchOperatorDataResult struct {
+	SourceURL      string           `json:"sourceUrl"`
+	FetchedAt      string           `json:"fetchedAt"`
+	Operators      []OperatorRecord `json:"operators"`
+	FromCache      bool             `json:"fromCache"`
+	CacheAvailable bool             `json:"cacheAvailable"`
+}
+
+type operatorCachePayload struct {
 	SourceURL string           `json:"sourceUrl"`
 	FetchedAt string           `json:"fetchedAt"`
 	Operators []OperatorRecord `json:"operators"`
@@ -66,10 +90,51 @@ func (a *App) FetchOperatorData() (FetchOperatorDataResult, error) {
 		return FetchOperatorDataResult{}, err
 	}
 
-	return FetchOperatorDataResult{
+	cacheDir, err := ensureOperatorCacheDir("")
+	if err != nil {
+		return FetchOperatorDataResult{}, fmt.Errorf("failed to prepare operator cache directory: %w", err)
+	}
+
+	operators = cacheOperatorImages(client, cacheDir, operators)
+	cache := operatorCachePayload{
 		SourceURL: operatorDataSourceURL,
 		FetchedAt: time.Now().Format(time.RFC3339),
 		Operators: operators,
+	}
+	if err := saveOperatorCache(cacheDir, cache); err != nil {
+		return FetchOperatorDataResult{}, fmt.Errorf("failed to save operator cache: %w", err)
+	}
+
+	return loadCachedOperatorDataFromDir(cacheDir)
+}
+
+func (a *App) LoadCachedOperatorData() (FetchOperatorDataResult, error) {
+	return loadCachedOperatorDataFromDir("")
+}
+
+func loadCachedOperatorDataFromDir(baseDir string) (FetchOperatorDataResult, error) {
+	cacheDir, err := ensureOperatorCacheDir(baseDir)
+	if err != nil {
+		return FetchOperatorDataResult{}, fmt.Errorf("failed to resolve operator cache directory: %w", err)
+	}
+
+	cache, err := readOperatorCache(cacheDir)
+	if err != nil {
+		if errors.Is(err, errOperatorCacheNotFound) {
+			return FetchOperatorDataResult{CacheAvailable: false}, nil
+		}
+		return FetchOperatorDataResult{}, err
+	}
+
+	sortOperatorRecords(cache.Operators)
+	applyLocalImageURLs(cacheDir, cache.Operators)
+
+	return FetchOperatorDataResult{
+		SourceURL:      cache.SourceURL,
+		FetchedAt:      cache.FetchedAt,
+		Operators:      cache.Operators,
+		FromCache:      true,
+		CacheAvailable: true,
 	}, nil
 }
 
@@ -85,8 +150,8 @@ func parseOperatorDataHTML(r io.Reader) ([]OperatorRecord, error) {
 	}
 
 	operators := make([]OperatorRecord, 0, len(nodes))
-	for _, node := range nodes {
-		record, err := parseOperatorRecord(node)
+	for index, node := range nodes {
+		record, err := parseOperatorRecord(node, index)
 		if err != nil {
 			return nil, err
 		}
@@ -96,7 +161,7 @@ func parseOperatorDataHTML(r io.Reader) ([]OperatorRecord, error) {
 	return operators, nil
 }
 
-func parseOperatorRecord(node *html.Node) (OperatorRecord, error) {
+func parseOperatorRecord(node *html.Node, order int) (OperatorRecord, error) {
 	nameNode := findFirstNodeByClass(node, "picText")
 	name := strings.TrimSpace(extractText(nameNode))
 	if name == "" {
@@ -126,9 +191,11 @@ func parseOperatorRecord(node *html.Node) (OperatorRecord, error) {
 	metadata := parseOperatorMetadata(strings.TrimSpace(getAttr(node, "data-param1")), displayTags)
 
 	return OperatorRecord{
+		Order:               order,
 		Name:                name,
 		Rarity:              rarity,
 		DisplayTags:         displayTags,
+		RemoteImageURL:      extractRemoteImageURL(node),
 		IsPublicRecruitable: contains(metadata.AcquisitionMethods, "公开招募"),
 		Metadata:            metadata,
 	}, nil
@@ -180,6 +247,175 @@ func parseOperatorMetadata(raw string, displayTags []string) OperatorMetadata {
 	return metadata
 }
 
+func ensureOperatorCacheDir(baseDir string) (string, error) {
+	root := baseDir
+	if root == "" {
+		userCacheDir, err := os.UserCacheDir()
+		if err != nil {
+			return "", err
+		}
+		root = filepath.Join(userCacheDir, "ArknightsRecruitmentAutoTool", "operator-data")
+	}
+
+	imageDir := filepath.Join(root, "images")
+	if err := os.MkdirAll(imageDir, 0o755); err != nil {
+		return "", err
+	}
+	return root, nil
+}
+
+func operatorCacheFilePath(baseDir string) string {
+	return filepath.Join(baseDir, operatorCacheFileName)
+}
+
+func operatorImageDir(baseDir string) string {
+	return filepath.Join(baseDir, "images")
+}
+
+func saveOperatorCache(baseDir string, cache operatorCachePayload) error {
+	payload, err := json.MarshalIndent(cache, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(operatorCacheFilePath(baseDir), payload, 0o644)
+}
+
+func readOperatorCache(baseDir string) (operatorCachePayload, error) {
+	raw, err := os.ReadFile(operatorCacheFilePath(baseDir))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return operatorCachePayload{}, errOperatorCacheNotFound
+		}
+		return operatorCachePayload{}, err
+	}
+
+	var cache operatorCachePayload
+	if err := json.Unmarshal(raw, &cache); err != nil {
+		return operatorCachePayload{}, fmt.Errorf("failed to parse operator cache file: %w", err)
+	}
+	return cache, nil
+}
+
+func cacheOperatorImages(client *http.Client, baseDir string, operators []OperatorRecord) []OperatorRecord {
+	result := make([]OperatorRecord, len(operators))
+	copy(result, operators)
+
+	for index := range result {
+		if result[index].RemoteImageURL == "" {
+			continue
+		}
+
+		localPath, err := downloadOperatorImage(client, operatorImageDir(baseDir), result[index])
+		if err != nil {
+			continue
+		}
+		result[index].LocalImagePath = localPath
+		result[index].LocalImageURL = localFileURL(localPath)
+	}
+
+	return result
+}
+
+func downloadOperatorImage(client *http.Client, imageDir string, operator OperatorRecord) (string, error) {
+	response, err := client.Get(operator.RemoteImageURL)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected image status code: %d", response.StatusCode)
+	}
+
+	imageBytes, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
+	if err != nil {
+		return "", err
+	}
+
+	extension := imageExtension(operator.RemoteImageURL, response.Header.Get("Content-Type"))
+	filename := fmt.Sprintf("%03d%s", operator.Order, extension)
+	fullPath := filepath.Join(imageDir, filename)
+	if err := os.WriteFile(fullPath, imageBytes, 0o644); err != nil {
+		return "", err
+	}
+	return fullPath, nil
+}
+
+func imageExtension(rawURL, contentType string) string {
+	parsedURL, err := url.Parse(rawURL)
+	if err == nil {
+		ext := strings.ToLower(path.Ext(parsedURL.Path))
+		if ext != "" && len(ext) <= 5 {
+			return ext
+		}
+	}
+
+	extensions, err := mime.ExtensionsByType(strings.Split(contentType, ";")[0])
+	if err == nil && len(extensions) > 0 {
+		return extensions[0]
+	}
+
+	return ".jpg"
+}
+
+func applyLocalImageURLs(baseDir string, operators []OperatorRecord) {
+	for index := range operators {
+		if operators[index].LocalImagePath == "" {
+			continue
+		}
+
+		if !filepath.IsAbs(operators[index].LocalImagePath) {
+			operators[index].LocalImagePath = filepath.Join(baseDir, operators[index].LocalImagePath)
+		}
+		operators[index].LocalImageURL = localFileURL(operators[index].LocalImagePath)
+	}
+}
+
+func localFileURL(fullPath string) string {
+	normalized := filepath.ToSlash(fullPath)
+	if !strings.HasPrefix(normalized, "/") {
+		normalized = "/" + normalized
+	}
+	return (&url.URL{Scheme: "file", Path: normalized}).String()
+}
+
+func sortOperatorRecords(records []OperatorRecord) {
+	sort.SliceStable(records, func(i, j int) bool {
+		return records[i].Order < records[j].Order
+	})
+}
+
+func extractRemoteImageURL(node *html.Node) string {
+	imgNode := findFirstNode(node, func(current *html.Node) bool {
+		return current.Type == html.ElementNode && current.Data == "img"
+	})
+	if imgNode == nil {
+		return ""
+	}
+
+	rawURL := strings.TrimSpace(getAttr(imgNode, "src"))
+	if rawURL == "" {
+		return ""
+	}
+	return resolveSourceURL(rawURL)
+}
+
+func resolveSourceURL(rawURL string) string {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	if parsedURL.IsAbs() {
+		return parsedURL.String()
+	}
+
+	sourceURL, err := url.Parse(operatorDataSourceURL)
+	if err != nil {
+		return rawURL
+	}
+	return sourceURL.ResolveReference(parsedURL).String()
+}
+
 func splitMetadata(raw string) []string {
 	if raw == "" {
 		return nil
@@ -227,10 +463,22 @@ func contains(values []string, target string) bool {
 }
 
 func findNodesByClass(root *html.Node, className string) []*html.Node {
+	return findNodes(root, func(node *html.Node) bool {
+		return node.Type == html.ElementNode && hasClass(node, className)
+	})
+}
+
+func findFirstNodeByClass(root *html.Node, className string) *html.Node {
+	return findFirstNode(root, func(node *html.Node) bool {
+		return node.Type == html.ElementNode && hasClass(node, className)
+	})
+}
+
+func findNodes(root *html.Node, match func(*html.Node) bool) []*html.Node {
 	var matches []*html.Node
 	var walk func(*html.Node)
 	walk = func(node *html.Node) {
-		if node.Type == html.ElementNode && hasClass(node, className) {
+		if match(node) {
 			matches = append(matches, node)
 		}
 		for child := node.FirstChild; child != nil; child = child.NextSibling {
@@ -241,15 +489,15 @@ func findNodesByClass(root *html.Node, className string) []*html.Node {
 	return matches
 }
 
-func findFirstNodeByClass(root *html.Node, className string) *html.Node {
+func findFirstNode(root *html.Node, match func(*html.Node) bool) *html.Node {
 	if root == nil {
 		return nil
 	}
-	if root.Type == html.ElementNode && hasClass(root, className) {
+	if match(root) {
 		return root
 	}
 	for child := root.FirstChild; child != nil; child = child.NextSibling {
-		if result := findFirstNodeByClass(child, className); result != nil {
+		if result := findFirstNode(child, match); result != nil {
 			return result
 		}
 	}

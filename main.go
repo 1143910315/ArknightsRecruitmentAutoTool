@@ -253,7 +253,7 @@ func createHighlightWindow(x, y, width, height int32) {
 	defer runtime.UnlockOSThread()
 
 	instance := win.GetModuleHandle(nil)
-	className := syscall.StringToUTF16Ptr("HighlightWindowClass")
+	className, _ := syscall.UTF16PtrFromString("HighlightWindowClass")
 
 	// 注册窗口类
 	wndClass := win.WNDCLASSEX{
