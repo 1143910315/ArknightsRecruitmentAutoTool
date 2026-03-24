@@ -1,0 +1,130 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build",
+      "type": "shell",
+      "command": "wails",
+      "args": ["build", "-o", "ArknightsRecruitmentAutoTool.exe"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "build debug",
+      "type": "shell",
+      "command": "wails",
+      "args": ["build", "-debug", "-devtools", "-o", "ArknightsRecruitmentAutoTool.exe"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "wails dev",
+      "type": "shell",
+      "command": "wails",
+      "args": ["dev"],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^(.*)$",
+          "file": 1,
+          "location": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".*",
+          "endsPattern": "Watching \\(sub\\)/directory:.*"
+        }
+      }
+    },
+    {
+      "label": "pnpm install",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["install"],
+      "options": {
+        "cwd": "${workspaceFolder}/frontend"
+      },
+      "presentation": {
+        "clear": true,
+        "panel": "shared",
+        "showReuseMessage": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "pnpm build",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["build"],
+      "options": {
+        "cwd": "${workspaceFolder}/frontend"
+      },
+      "presentation": {
+        "clear": true,
+        "panel": "shared",
+        "showReuseMessage": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "wails build",
+      "type": "shell",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "command": "go",
+      "args": [
+        "build",
+        "-tags",
+        "dev",
+        "-gcflags",
+        "all=-N -l",
+        "-o",
+        "build/bin/ArknightsRecruitmentAutoTool.exe"
+      ],
+      "dependsOn": ["pnpm install", "pnpm build"]
+    },
+    {
+      "label": "dlv attach waitfor",
+      "type": "shell",
+      "command": "dlv",
+      "args": [
+        "attach",
+        "--waitfor=${workspaceFolder}\\build\\bin\\ArknightsRecruitmentAutoTool", // 仅需进程名前缀，无需完整路径
+        "--headless",
+        "--listen=:2345",
+        "--api-version=2"
+      ],
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^(.*)$",
+          "file": 1,
+          "location": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".*",
+          "endsPattern": "API server listening at:.*" // 服务器就绪标志
+        }
+      }
+    },
+    {
+      "label": "Start Debug Environment",
+      "dependsOn": ["dlv attach waitfor", "wails dev"],
+      "dependsOrder": "sequence", // 确保顺序执行：先启动 dlv，再启动 wails dev
+      "problemMatcher": []
+    }
+  ]
+}
