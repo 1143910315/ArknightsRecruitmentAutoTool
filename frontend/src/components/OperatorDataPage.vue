@@ -1,4 +1,4 @@
-<template>
+﻿<template>
     <div class="operator-page">
         <section class="hero-card panel">
             <div>
@@ -187,7 +187,7 @@ async function loadOperatorImages(records) {
     }
 
     operatorImageSources.value = Object.fromEntries(
-        resolvedEntries.filter(([, imageSource]) => Boolean(imageSource))
+        resolvedEntries.filter(([, imageSource]) => Boolean(imageSource)),
     )
 }
 

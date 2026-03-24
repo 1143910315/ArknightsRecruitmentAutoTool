@@ -42,7 +42,8 @@
 
             <section class="page-body">
                 <WindowToolsPage v-if="activePage === 'window-tools'" />
-                <OperatorDataPage v-else />
+                <OperatorDataPage v-else-if="activePage === 'operator-data'" />
+                <PublicRecruitmentPage v-else />
             </section>
         </main>
     </div>
@@ -51,6 +52,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import OperatorDataPage from './components/OperatorDataPage.vue'
+import PublicRecruitmentPage from './components/PublicRecruitmentPage.vue'
 import WindowToolsPage from './components/WindowToolsPage.vue'
 
 const navigationItems = [
@@ -65,6 +67,12 @@ const navigationItems = [
         label: '干员数据',
         shortLabel: 'OD',
         description: '优先加载本地缓存的公开招募干员数据，并支持手动刷新。',
+    },
+    {
+        key: 'public-recruitment',
+        label: '公开招募',
+        shortLabel: 'PR',
+        description: '选择公开招募标签并查看全部有效组合对应的干员结果。',
     },
 ]
 
