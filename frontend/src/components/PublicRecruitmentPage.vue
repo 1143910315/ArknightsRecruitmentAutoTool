@@ -5,7 +5,7 @@
                 <p class="section-kicker">Public Recruitment</p>
                 <h2>公开招募标签组合</h2>
                 <p class="summary">
-                    基于本地缓存的公开招募干员数据筛选标签组合。最多可选择 5 个标签，并查看每种有效组合命中的干员。
+                    基于本地缓存的公开招募干员数据筛选标签组合。你也可以开启模板驱动的自动识别，让页面按照识别设置中的模板持续同步当前招募标签。
                 </p>
             </div>
 
@@ -40,19 +40,38 @@
                         <p class="section-kicker">Selection</p>
                         <h3>选择公开招募标签</h3>
                     </div>
-                    <button
-                        v-if="selectedTags.length"
-                        class="secondary-button"
-                        type="button"
-                        @click="clearSelectedTags"
-                    >
-                        清空选择
-                    </button>
+                    <div class="selection-actions">
+                        <label class="toggle-chip">
+                            <input v-model="autoRecognitionEnabled" type="checkbox" @change="handleAutoRecognitionToggle">
+                            <span>自动识别</span>
+                        </label>
+                        <button
+                            v-if="selectedTags.length"
+                            class="secondary-button"
+                            type="button"
+                            @click="clearSelectedTags"
+                        >
+                            清空选择
+                        </button>
+                    </div>
                 </div>
 
                 <p class="selection-note">
-                    组合结果会显示所有非空子组合；没有命中干员的组合会自动隐藏。
+                    组合结果会显示所有非空子组合，没有命中干员的组合会自动隐藏。自动识别成功时会直接替换当前选中标签；识别失败时不会改动当前选择。
                 </p>
+
+                <div class="automation-panel">
+                    <div>
+                        <p class="section-kicker">Recognition</p>
+                        <h4>{{ autoRecognitionEnabled ? '正在轮询识别模板' : '自动识别已关闭' }}</h4>
+                        <p class="automation-copy">模板: {{ autoRecognitionTemplateLabel }}</p>
+                        <p class="automation-copy">状态: {{ autoRecognitionStatusMessage }}</p>
+                    </div>
+                    <div class="automation-meta">
+                        <span class="result-count">{{ autoRecognitionBusy ? '识别中' : '空闲' }}</span>
+                        <span v-if="autoRecognitionLastSuccessAt" class="result-count">上次同步 {{ autoRecognitionLastSuccessAt }}</span>
+                    </div>
+                </div>
 
                 <div class="selected-tags" v-if="selectedTags.length">
                     <span v-for="tag in selectedTags" :key="tag" class="selected-tag-chip">{{ tag }}</span>
@@ -86,7 +105,7 @@
             <section class="panel empty-state" v-else-if="!resultGroups.length">
                 <p class="section-kicker">No Matches</p>
                 <h3>当前标签组合没有匹配干员</h3>
-                <p>可以减少标签数量或更换标签，查看其它有效组合。</p>
+                <p>可以减少标签数量或更换标签，查看其他有效组合。</p>
             </section>
 
             <section v-else class="results-layout">
@@ -130,9 +149,13 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { LoadCachedOperatorData } from '../../wailsjs/go/main/App'
+import {
+    LoadCachedOperatorData,
+    LoadRecognitionTemplates,
+    RunPublicRecruitmentRecognition,
+} from '../../wailsjs/go/main/App'
 import { recruitmentTagGroups, recruitmentTagSet } from '../constants/recruitmentTags'
 
 const selectedTags = ref([])
@@ -141,8 +164,25 @@ const loading = ref(false)
 const errorMessage = ref('')
 const hasRecruitmentData = ref(false)
 const fromCache = ref(false)
+const autoRecognitionEnabled = ref(false)
+const autoRecognitionBusy = ref(false)
+const autoRecognitionTemplate = ref(null)
+const autoRecognitionStatusMessage = ref('等待开启自动识别')
+const autoRecognitionLastSuccessAt = ref('')
+
+let autoRecognitionTimer = null
+let autoRecognitionSession = 0
 
 const sourceModeLabel = computed(() => (fromCache.value ? '本地缓存' : '未加载'))
+const autoRecognitionTemplateLabel = computed(() => {
+    if (!autoRecognitionTemplate.value) {
+        return '未找到识别模板'
+    }
+
+    const title = autoRecognitionTemplate.value.title || '(无标题)'
+    const className = autoRecognitionTemplate.value.className || '(未知类名)'
+    return `${title} / ${className}`
+})
 
 const resultGroups = computed(() => {
     const combinations = buildTagCombinations(selectedTags.value)
@@ -165,13 +205,17 @@ function isSelected(tag) {
     return selectedTags.value.includes(tag)
 }
 
+function setSelectedTags(tags) {
+    selectedTags.value = [...tags]
+}
+
 function clearSelectedTags() {
-    selectedTags.value = []
+    setSelectedTags([])
 }
 
 function toggleTag(tag) {
     if (isSelected(tag)) {
-        selectedTags.value = selectedTags.value.filter((item) => item !== tag)
+        setSelectedTags(selectedTags.value.filter((item) => item !== tag))
         return
     }
 
@@ -180,7 +224,7 @@ function toggleTag(tag) {
         return
     }
 
-    selectedTags.value = [...selectedTags.value, tag]
+    setSelectedTags([...selectedTags.value, tag])
 }
 
 function buildTagCombinations(tags) {
@@ -260,8 +304,122 @@ async function loadRecruitmentData() {
     }
 }
 
+async function loadRecognitionTemplateSummary() {
+    try {
+        const templates = await LoadRecognitionTemplates()
+        autoRecognitionTemplate.value = Array.isArray(templates) && templates.length ? templates[0] : null
+        if (!autoRecognitionTemplate.value && autoRecognitionEnabled.value) {
+            autoRecognitionStatusMessage.value = '未找到可用识别模板'
+        }
+    } catch (error) {
+        console.error('加载识别模板失败:', error)
+        autoRecognitionTemplate.value = null
+        autoRecognitionStatusMessage.value = '识别模板加载失败'
+    }
+}
+
+function clearAutoRecognitionTimer() {
+    if (autoRecognitionTimer) {
+        window.clearTimeout(autoRecognitionTimer)
+        autoRecognitionTimer = null
+    }
+}
+
+function stopAutoRecognitionLoop() {
+    autoRecognitionSession += 1
+    clearAutoRecognitionTimer()
+    autoRecognitionBusy.value = false
+}
+
+function scheduleNextAutoRecognitionRun(sessionId) {
+    clearAutoRecognitionTimer()
+    autoRecognitionTimer = window.setTimeout(() => {
+        void runAutoRecognition(sessionId)
+    }, 500)
+}
+
+function describeRecognitionFailure(result) {
+    switch (result?.failureReason) {
+    case 'no_template':
+        return '未配置识别模板'
+    case 'no_window':
+        return '目标窗口不可用'
+    case 'ambiguous_window':
+        return '存在多个同标题同类名窗口，无法唯一定位'
+    case 'capture_failed':
+        return '窗口截图失败'
+    case 'incomplete_match':
+        return result?.failureMessage || '存在未命中或多命中的区域，本轮不更新标签'
+    default:
+        return result?.failureMessage || '识别未返回可用标签'
+    }
+}
+
+async function runAutoRecognition(sessionId) {
+    if (!autoRecognitionEnabled.value || sessionId !== autoRecognitionSession) {
+        return
+    }
+    if (!autoRecognitionTemplate.value?.id) {
+        autoRecognitionStatusMessage.value = '未找到可用识别模板'
+        return
+    }
+
+    autoRecognitionBusy.value = true
+    try {
+        const result = await RunPublicRecruitmentRecognition({ templateId: autoRecognitionTemplate.value.id })
+        if (!autoRecognitionEnabled.value || sessionId !== autoRecognitionSession) {
+            return
+        }
+
+        if (result?.success) {
+            setSelectedTags(Array.isArray(result.recognizedTags) ? result.recognizedTags : [])
+            autoRecognitionLastSuccessAt.value = new Date().toLocaleTimeString()
+            autoRecognitionStatusMessage.value = `已识别: ${(result.recognizedTags || []).join('、')}`
+        } else {
+            autoRecognitionStatusMessage.value = describeRecognitionFailure(result)
+        }
+    } catch (error) {
+        console.error('公开招募自动识别失败:', error)
+        if (!autoRecognitionEnabled.value || sessionId !== autoRecognitionSession) {
+            return
+        }
+        autoRecognitionStatusMessage.value = typeof error === 'string' ? error : error?.message || '识别请求失败'
+    } finally {
+        if (!autoRecognitionEnabled.value || sessionId !== autoRecognitionSession) {
+            autoRecognitionBusy.value = false
+            return
+        }
+        autoRecognitionBusy.value = false
+        scheduleNextAutoRecognitionRun(sessionId)
+    }
+}
+
+async function handleAutoRecognitionToggle() {
+    if (!autoRecognitionEnabled.value) {
+        stopAutoRecognitionLoop()
+        autoRecognitionStatusMessage.value = '自动识别已关闭'
+        return
+    }
+
+    stopAutoRecognitionLoop()
+    autoRecognitionSession += 1
+    await loadRecognitionTemplateSummary()
+    if (!autoRecognitionTemplate.value?.id) {
+        autoRecognitionStatusMessage.value = '未找到可用识别模板'
+        return
+    }
+
+    autoRecognitionStatusMessage.value = '正在启动自动识别'
+    void runAutoRecognition(autoRecognitionSession)
+}
+
 onMounted(() => {
-    loadRecruitmentData()
+    void loadRecruitmentData()
+    void loadRecognitionTemplateSummary()
+})
+
+onBeforeUnmount(() => {
+    stopAutoRecognitionLoop()
 })
 </script>
 
@@ -301,7 +459,8 @@ onMounted(() => {
 .summary,
 .meta-text,
 .selection-note,
-.operator-meta {
+.operator-meta,
+.automation-copy {
     margin: 0;
 }
 
@@ -320,7 +479,8 @@ h4 {
 
 .summary,
 .selection-note,
-.operator-meta {
+.operator-meta,
+.automation-copy {
     color: #55728f;
 }
 
@@ -357,6 +517,23 @@ h4 {
     gap: 1.25rem;
 }
 
+.selection-actions,
+.automation-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.automation-panel {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 1rem;
+    border-radius: 1.25rem;
+    background: rgba(91, 169, 255, 0.08);
+    padding: 1rem;
+}
+
 .tag-group-list {
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
@@ -378,7 +555,8 @@ h4 {
 .selected-tag-chip,
 .operator-tag,
 .result-count,
-.secondary-button {
+.secondary-button,
+.toggle-chip {
     border-radius: 999px;
     font: inherit;
 }
@@ -415,10 +593,22 @@ h4 {
     color: #2d628f;
 }
 
-.secondary-button {
+.secondary-button,
+.toggle-chip {
     padding: 0.7rem 1rem;
     background: rgba(91, 169, 255, 0.14);
     color: #24527c;
+}
+
+.toggle-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    font-weight: 600;
+}
+
+.toggle-chip input {
+    accent-color: #2d628f;
 }
 
 .result-group {

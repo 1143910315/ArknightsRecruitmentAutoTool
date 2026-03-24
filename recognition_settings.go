@@ -25,6 +25,23 @@ import (
 
 const recognitionTemplateDirName = "recognition-templates"
 
+const (
+	publicRecruitmentRecognitionFailureNone            = ""
+	publicRecruitmentRecognitionFailureNoTemplate      = "no_template"
+	publicRecruitmentRecognitionFailureNoWindow        = "no_window"
+	publicRecruitmentRecognitionFailureAmbiguousWindow = "ambiguous_window"
+	publicRecruitmentRecognitionFailureCaptureFailed   = "capture_failed"
+	publicRecruitmentRecognitionFailureIncompleteMatch = "incomplete_match"
+)
+
+var (
+	captureWindowPNGFunc                   = captureWindowPNG
+	resolveRecognitionWindowCandidatesFunc = resolveRecognitionWindowCandidates
+	isWindowHandleAliveFunc                = isWindowHandleAlive
+	resolveWindowInstanceFunc              = resolveRecognitionWindowInstance
+	isWindowProc                           = user32.NewProc("IsWindow")
+)
+
 type RecognitionWindowCaptureResult struct {
 	Hwnd        uintptr `json:"hwnd"`
 	Title       string  `json:"title"`
@@ -88,16 +105,37 @@ type RecognitionTemplateSummary struct {
 }
 
 type RecognitionTemplate struct {
-	ID             string              `json:"id"`
-	Hwnd           uintptr             `json:"hwnd"`
-	Title          string              `json:"title"`
-	ClassName      string              `json:"className"`
-	Width          int                 `json:"width"`
-	Height         int                 `json:"height"`
-	ScreenshotPath string              `json:"screenshotPath"`
-	ScreenshotPNG  string              `json:"screenshotPng,omitempty"`
-	CreatedAt      string              `json:"createdAt"`
-	Regions        []RecognitionRegion `json:"regions"`
+	ID             string                            `json:"id"`
+	Hwnd           uintptr                           `json:"hwnd"`
+	Title          string                            `json:"title"`
+	ClassName      string                            `json:"className"`
+	Instance       RecognitionWindowInstanceMetadata `json:"instance"`
+	Width          int                               `json:"width"`
+	Height         int                               `json:"height"`
+	ScreenshotPath string                            `json:"screenshotPath"`
+	ScreenshotPNG  string                            `json:"screenshotPng,omitempty"`
+	CreatedAt      string                            `json:"createdAt"`
+	Regions        []RecognitionRegion               `json:"regions"`
+}
+
+type RecognitionWindowInstanceMetadata struct {
+	ProcessID uint32                  `json:"processId"`
+	Bounds    RecognitionWindowBounds `json:"bounds"`
+}
+
+type RecognitionWindowBounds struct {
+	Left   int `json:"left"`
+	Top    int `json:"top"`
+	Right  int `json:"right"`
+	Bottom int `json:"bottom"`
+}
+
+type RecognitionWindowCandidate struct {
+	Hwnd      uintptr                 `json:"hwnd"`
+	Title     string                  `json:"title"`
+	ClassName string                  `json:"className"`
+	ProcessID uint32                  `json:"processId"`
+	Bounds    RecognitionWindowBounds `json:"bounds"`
 }
 
 type RecognitionRegionMatchResult struct {
@@ -121,6 +159,20 @@ type RecognitionMatchResult struct {
 	TemplateID string                         `json:"templateId"`
 	Hwnd       uintptr                        `json:"hwnd"`
 	Results    []RecognitionRegionMatchResult `json:"results"`
+}
+
+type PublicRecruitmentRecognitionRequest struct {
+	TemplateID string `json:"templateId"`
+}
+
+type PublicRecruitmentRecognitionResult struct {
+	TemplateID     string                         `json:"templateId"`
+	Hwnd           uintptr                        `json:"hwnd,omitempty"`
+	Success        bool                           `json:"success"`
+	FailureReason  string                         `json:"failureReason,omitempty"`
+	FailureMessage string                         `json:"failureMessage,omitempty"`
+	RecognizedTags []string                       `json:"recognizedTags"`
+	Results        []RecognitionRegionMatchResult `json:"results"`
 }
 
 func (a *App) CaptureWindowForRecognition(hwnd uintptr) (RecognitionWindowCaptureResult, error) {
@@ -215,6 +267,7 @@ func (a *App) SaveRecognitionTemplate(input RecognitionTemplateInput) (Recogniti
 		Hwnd:           input.Hwnd,
 		Title:          input.Title,
 		ClassName:      input.ClassName,
+		Instance:       captureRecognitionWindowInstanceMetadata(input.Hwnd),
 		Width:          input.Width,
 		Height:         input.Height,
 		ScreenshotPath: filepath.ToSlash("window.png"),
@@ -302,7 +355,7 @@ func (a *App) MatchRecognitionTemplate(input RecognitionMatchRequest) (Recogniti
 		return RecognitionMatchResult{}, err
 	}
 
-	screenshotBytes, _, _, err := captureWindowPNG(input.Hwnd)
+	screenshotBytes, _, _, err := captureWindowPNGFunc(input.Hwnd)
 	if err != nil {
 		return RecognitionMatchResult{}, err
 	}
@@ -340,6 +393,73 @@ func (a *App) MatchRecognitionTemplate(input RecognitionMatchRequest) (Recogniti
 	}
 
 	return RecognitionMatchResult{TemplateID: template.ID, Hwnd: input.Hwnd, Results: results}, nil
+}
+
+func (a *App) RunPublicRecruitmentRecognition(input PublicRecruitmentRecognitionRequest) (PublicRecruitmentRecognitionResult, error) {
+	templateID := strings.TrimSpace(input.TemplateID)
+	if templateID == "" {
+		return PublicRecruitmentRecognitionResult{
+			Success:        false,
+			FailureReason:  publicRecruitmentRecognitionFailureNoTemplate,
+			FailureMessage: "template id is required",
+			RecognizedTags: []string{},
+			Results:        []RecognitionRegionMatchResult{},
+		}, nil
+	}
+
+	template, err := a.GetRecognitionTemplate(templateID)
+	if err != nil {
+		return PublicRecruitmentRecognitionResult{}, err
+	}
+
+	resolvedHwnd, failureReason, err := resolveWindowInstanceFunc(template)
+	if err != nil {
+		return PublicRecruitmentRecognitionResult{
+			TemplateID:     template.ID,
+			Success:        false,
+			FailureReason:  failureReason,
+			FailureMessage: err.Error(),
+			RecognizedTags: []string{},
+			Results:        []RecognitionRegionMatchResult{},
+		}, nil
+	}
+
+	matchResult, err := a.MatchRecognitionTemplate(RecognitionMatchRequest{
+		TemplateID: template.ID,
+		Hwnd:       resolvedHwnd,
+	})
+	if err != nil {
+		return PublicRecruitmentRecognitionResult{
+			TemplateID:     template.ID,
+			Hwnd:           resolvedHwnd,
+			Success:        false,
+			FailureReason:  publicRecruitmentRecognitionFailureCaptureFailed,
+			FailureMessage: err.Error(),
+			RecognizedTags: []string{},
+			Results:        []RecognitionRegionMatchResult{},
+		}, nil
+	}
+
+	recognizedTags, success, failureMessage := aggregateRecognizedRecruitmentTags(matchResult.Results)
+	if !success {
+		return PublicRecruitmentRecognitionResult{
+			TemplateID:     template.ID,
+			Hwnd:           resolvedHwnd,
+			Success:        false,
+			FailureReason:  publicRecruitmentRecognitionFailureIncompleteMatch,
+			FailureMessage: failureMessage,
+			RecognizedTags: []string{},
+			Results:        matchResult.Results,
+		}, nil
+	}
+
+	return PublicRecruitmentRecognitionResult{
+		TemplateID:     template.ID,
+		Hwnd:           resolvedHwnd,
+		Success:        true,
+		RecognizedTags: recognizedTags,
+		Results:        matchResult.Results,
+	}, nil
 }
 
 func ensureRecognitionTemplateRoot(baseDir string) (string, error) {
@@ -461,16 +581,17 @@ func readRecognitionTemplate(templateDir string) (RecognitionTemplate, error) {
 }
 
 type legacyRecognitionTemplate struct {
-	ID             string                    `json:"id"`
-	Hwnd           uintptr                   `json:"hwnd"`
-	Title          string                    `json:"title"`
-	ClassName      string                    `json:"className"`
-	Width          int                       `json:"width"`
-	Height         int                       `json:"height"`
-	ScreenshotPath string                    `json:"screenshotPath"`
-	ScreenshotPNG  string                    `json:"screenshotPng,omitempty"`
-	CreatedAt      string                    `json:"createdAt"`
-	Regions        []legacyRecognitionRegion `json:"regions"`
+	ID             string                            `json:"id"`
+	Hwnd           uintptr                           `json:"hwnd"`
+	Title          string                            `json:"title"`
+	ClassName      string                            `json:"className"`
+	Instance       RecognitionWindowInstanceMetadata `json:"instance"`
+	Width          int                               `json:"width"`
+	Height         int                               `json:"height"`
+	ScreenshotPath string                            `json:"screenshotPath"`
+	ScreenshotPNG  string                            `json:"screenshotPng,omitempty"`
+	CreatedAt      string                            `json:"createdAt"`
+	Regions        []legacyRecognitionRegion         `json:"regions"`
 }
 
 type legacyRecognitionRegion struct {
@@ -538,12 +659,177 @@ func normalizeLegacyRecognitionTemplate(legacy legacyRecognitionTemplate) Recogn
 		Hwnd:           legacy.Hwnd,
 		Title:          legacy.Title,
 		ClassName:      legacy.ClassName,
+		Instance:       legacy.Instance,
 		Width:          legacy.Width,
 		Height:         legacy.Height,
 		ScreenshotPath: legacy.ScreenshotPath,
 		ScreenshotPNG:  legacy.ScreenshotPNG,
 		CreatedAt:      legacy.CreatedAt,
 		Regions:        regions,
+	}
+}
+
+func captureRecognitionWindowInstanceMetadata(hwnd uintptr) RecognitionWindowInstanceMetadata {
+	if hwnd == 0 {
+		return RecognitionWindowInstanceMetadata{}
+	}
+	candidate := buildRecognitionWindowCandidate(hwnd)
+	return RecognitionWindowInstanceMetadata{
+		ProcessID: candidate.ProcessID,
+		Bounds:    candidate.Bounds,
+	}
+}
+
+func resolveRecognitionWindowInstance(template RecognitionTemplate) (uintptr, string, error) {
+	if template.Hwnd != 0 && isWindowHandleAliveFunc(template.Hwnd) {
+		return template.Hwnd, publicRecruitmentRecognitionFailureNone, nil
+	}
+
+	candidates, err := resolveRecognitionWindowCandidatesFunc(template.Title, template.ClassName)
+	if err != nil {
+		return 0, publicRecruitmentRecognitionFailureNoWindow, err
+	}
+	if len(candidates) == 0 {
+		return 0, publicRecruitmentRecognitionFailureNoWindow, errors.New("no matching window instance found")
+	}
+
+	matchingCandidates := filterRecognitionWindowCandidates(template.Instance, candidates)
+	if len(matchingCandidates) == 1 {
+		return matchingCandidates[0].Hwnd, publicRecruitmentRecognitionFailureNone, nil
+	}
+	if len(matchingCandidates) == 0 {
+		return 0, publicRecruitmentRecognitionFailureNoWindow, errors.New("no matching window instance found")
+	}
+	return 0, publicRecruitmentRecognitionFailureAmbiguousWindow, errors.New("multiple matching window instances found")
+}
+
+func resolveRecognitionWindowCandidates(title string, className string) ([]RecognitionWindowCandidate, error) {
+	windows, err := (&App{}).GetTopWindows()
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]RecognitionWindowCandidate, 0)
+	normalizedTitle := strings.TrimSpace(title)
+	normalizedClassName := strings.TrimSpace(className)
+	for _, windowInfo := range windows {
+		if normalizedTitle != "" && windowInfo.Title != normalizedTitle {
+			continue
+		}
+		if normalizedClassName != "" && windowInfo.ClassName != normalizedClassName {
+			continue
+		}
+		if !isWindowHandleAliveFunc(windowInfo.Hwnd) {
+			continue
+		}
+		filtered = append(filtered, buildRecognitionWindowCandidate(windowInfo.Hwnd))
+	}
+	return filtered, nil
+}
+
+func buildRecognitionWindowCandidate(hwnd uintptr) RecognitionWindowCandidate {
+	title, className := getWindowTextAndClass(hwnd)
+	return RecognitionWindowCandidate{
+		Hwnd:      hwnd,
+		Title:     title,
+		ClassName: className,
+		ProcessID: getWindowProcessID(hwnd),
+		Bounds:    getRecognitionWindowBounds(hwnd),
+	}
+}
+
+func filterRecognitionWindowCandidates(instance RecognitionWindowInstanceMetadata, candidates []RecognitionWindowCandidate) []RecognitionWindowCandidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	hasProcessID := instance.ProcessID != 0
+	hasBounds := instance.Bounds != (RecognitionWindowBounds{})
+	filtered := append([]RecognitionWindowCandidate(nil), candidates...)
+
+	if hasProcessID {
+		next := make([]RecognitionWindowCandidate, 0, len(filtered))
+		for _, candidate := range filtered {
+			if candidate.ProcessID == instance.ProcessID {
+				next = append(next, candidate)
+			}
+		}
+		if len(next) > 0 {
+			filtered = next
+		}
+	}
+
+	if hasBounds {
+		next := make([]RecognitionWindowCandidate, 0, len(filtered))
+		for _, candidate := range filtered {
+			if candidate.Bounds == instance.Bounds {
+				next = append(next, candidate)
+			}
+		}
+		if len(next) > 0 {
+			filtered = next
+		}
+	}
+
+	return filtered
+}
+
+func aggregateRecognizedRecruitmentTags(results []RecognitionRegionMatchResult) ([]string, bool, string) {
+	if len(results) == 0 {
+		return nil, false, "template has no recognition regions"
+	}
+
+	seen := make(map[string]struct{}, len(results))
+	tags := make([]string, 0, len(results))
+	for _, result := range results {
+		if len(result.MatchedStates) != 1 {
+			if len(result.MatchedStates) == 0 {
+				return nil, false, fmt.Sprintf("region %s matched no state", result.RegionID)
+			}
+			return nil, false, fmt.Sprintf("region %s matched multiple states", result.RegionID)
+		}
+
+		tag := strings.TrimSpace(result.MatchedStates[0].Tag)
+		if !isRecruitmentTag(tag) {
+			return nil, false, fmt.Sprintf("region %s matched unsupported recruitment tag", result.RegionID)
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		tags = append(tags, tag)
+	}
+
+	return tags, true, ""
+}
+
+func isWindowHandleAlive(hwnd uintptr) bool {
+	if hwnd == 0 {
+		return false
+	}
+	ret, _, _ := isWindowProc.Call(hwnd)
+	return ret != 0
+}
+
+func getWindowProcessID(hwnd uintptr) uint32 {
+	if hwnd == 0 {
+		return 0
+	}
+	var processID uint32
+	win.GetWindowThreadProcessId(win.HWND(hwnd), &processID)
+	return processID
+}
+
+func getRecognitionWindowBounds(hwnd uintptr) RecognitionWindowBounds {
+	rect, err := getWindowRect(win.HWND(hwnd))
+	if err != nil {
+		return RecognitionWindowBounds{}
+	}
+	return RecognitionWindowBounds{
+		Left:   rect.Min.X,
+		Top:    rect.Min.Y,
+		Right:  rect.Max.X,
+		Bottom: rect.Max.Y,
 	}
 }
 

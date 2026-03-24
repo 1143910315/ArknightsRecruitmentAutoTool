@@ -10,7 +10,140 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+func TestResolveRecognitionWindowInstancePrefersRecordedHandle(t *testing.T) {
+	originalAlive := isWindowHandleAliveFunc
+	originalCandidates := resolveRecognitionWindowCandidatesFunc
+	defer func() {
+		isWindowHandleAliveFunc = originalAlive
+		resolveRecognitionWindowCandidatesFunc = originalCandidates
+	}()
+
+	candidatesCalled := false
+	isWindowHandleAliveFunc = func(hwnd uintptr) bool {
+		return hwnd == 1001
+	}
+	resolveRecognitionWindowCandidatesFunc = func(title string, className string) ([]RecognitionWindowCandidate, error) {
+		candidatesCalled = true
+		return nil, nil
+	}
+
+	hwnd, failureReason, err := resolveRecognitionWindowInstance(RecognitionTemplate{
+		Hwnd:      1001,
+		Title:     "target",
+		ClassName: "game-window",
+	})
+	if err != nil {
+		t.Fatalf("resolveRecognitionWindowInstance returned error: %v", err)
+	}
+	if failureReason != publicRecruitmentRecognitionFailureNone {
+		t.Fatalf("expected no failure reason, got %s", failureReason)
+	}
+	if hwnd != 1001 {
+		t.Fatalf("expected recorded handle to be reused, got %d", hwnd)
+	}
+	if candidatesCalled {
+		t.Fatal("expected candidate resolution to be skipped when recorded handle is still alive")
+	}
+}
+
+func TestResolveRecognitionWindowInstanceFallsBackToUniqueMetadataMatch(t *testing.T) {
+	originalAlive := isWindowHandleAliveFunc
+	originalCandidates := resolveRecognitionWindowCandidatesFunc
+	defer func() {
+		isWindowHandleAliveFunc = originalAlive
+		resolveRecognitionWindowCandidatesFunc = originalCandidates
+	}()
+
+	isWindowHandleAliveFunc = func(hwnd uintptr) bool {
+		return false
+	}
+	resolveRecognitionWindowCandidatesFunc = func(title string, className string) ([]RecognitionWindowCandidate, error) {
+		return []RecognitionWindowCandidate{
+			{
+				Hwnd:      2001,
+				Title:     title,
+				ClassName: className,
+				ProcessID: 10,
+				Bounds:    RecognitionWindowBounds{Left: 1, Top: 2, Right: 101, Bottom: 202},
+			},
+			{
+				Hwnd:      2002,
+				Title:     title,
+				ClassName: className,
+				ProcessID: 11,
+				Bounds:    RecognitionWindowBounds{Left: 5, Top: 6, Right: 105, Bottom: 206},
+			},
+		}, nil
+	}
+
+	hwnd, failureReason, err := resolveRecognitionWindowInstance(RecognitionTemplate{
+		Hwnd:      1001,
+		Title:     "target",
+		ClassName: "game-window",
+		Instance: RecognitionWindowInstanceMetadata{
+			ProcessID: 11,
+			Bounds:    RecognitionWindowBounds{Left: 5, Top: 6, Right: 105, Bottom: 206},
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolveRecognitionWindowInstance returned error: %v", err)
+	}
+	if failureReason != publicRecruitmentRecognitionFailureNone {
+		t.Fatalf("expected no failure reason, got %s", failureReason)
+	}
+	if hwnd != 2002 {
+		t.Fatalf("expected fallback to select unique candidate, got %d", hwnd)
+	}
+}
+
+func TestResolveRecognitionWindowInstanceRejectsAmbiguousCandidates(t *testing.T) {
+	originalAlive := isWindowHandleAliveFunc
+	originalCandidates := resolveRecognitionWindowCandidatesFunc
+	defer func() {
+		isWindowHandleAliveFunc = originalAlive
+		resolveRecognitionWindowCandidatesFunc = originalCandidates
+	}()
+
+	isWindowHandleAliveFunc = func(hwnd uintptr) bool {
+		return false
+	}
+	resolveRecognitionWindowCandidatesFunc = func(title string, className string) ([]RecognitionWindowCandidate, error) {
+		return []RecognitionWindowCandidate{
+			{
+				Hwnd:      3001,
+				Title:     title,
+				ClassName: className,
+				ProcessID: 99,
+				Bounds:    RecognitionWindowBounds{Left: 10, Top: 10, Right: 210, Bottom: 210},
+			},
+			{
+				Hwnd:      3002,
+				Title:     title,
+				ClassName: className,
+				ProcessID: 99,
+				Bounds:    RecognitionWindowBounds{Left: 10, Top: 10, Right: 210, Bottom: 210},
+			},
+		}, nil
+	}
+
+	_, failureReason, err := resolveRecognitionWindowInstance(RecognitionTemplate{
+		Title:     "target",
+		ClassName: "game-window",
+		Instance: RecognitionWindowInstanceMetadata{
+			ProcessID: 99,
+			Bounds:    RecognitionWindowBounds{Left: 10, Top: 10, Right: 210, Bottom: 210},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected ambiguous candidates to return an error")
+	}
+	if failureReason != publicRecruitmentRecognitionFailureAmbiguousWindow {
+		t.Fatalf("expected ambiguous window failure, got %s", failureReason)
+	}
+}
 
 func TestCropImageRectReturnsRequestedArea(t *testing.T) {
 	source := image.NewNRGBA(image.Rect(10, 20, 14, 24))
@@ -146,6 +279,339 @@ func TestNormalizeRegionInputRejectsMissingTaggedState(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected normalizeRegionInput to reject state without recruitment tag")
 	}
+}
+
+func TestAggregateRecognizedRecruitmentTagsReturnsUniqueTags(t *testing.T) {
+	tags, ok, message := aggregateRecognizedRecruitmentTags([]RecognitionRegionMatchResult{
+		{
+			RegionID: "region-01",
+			MatchedStates: []RecognitionRegionStateMatchItem{
+				{StateID: "state-01", Tag: "\u8fd1\u536b"},
+			},
+		},
+		{
+			RegionID: "region-02",
+			MatchedStates: []RecognitionRegionStateMatchItem{
+				{StateID: "state-02", Tag: "\u8f93\u51fa"},
+			},
+		},
+		{
+			RegionID: "region-03",
+			MatchedStates: []RecognitionRegionStateMatchItem{
+				{StateID: "state-03", Tag: "\u8fd1\u536b"},
+			},
+		},
+	})
+	if !ok {
+		t.Fatalf("expected aggregateRecognizedRecruitmentTags to succeed, got %s", message)
+	}
+	if len(tags) != 2 || tags[0] != "\u8fd1\u536b" || tags[1] != "\u8f93\u51fa" {
+		t.Fatalf("unexpected aggregated tags: %#v", tags)
+	}
+}
+
+func TestAggregateRecognizedRecruitmentTagsRejectsZeroMatchRegion(t *testing.T) {
+	_, ok, message := aggregateRecognizedRecruitmentTags([]RecognitionRegionMatchResult{
+		{RegionID: "region-01", MatchedStates: []RecognitionRegionStateMatchItem{}},
+	})
+	if ok {
+		t.Fatal("expected zero-match region to fail aggregation")
+	}
+	if message == "" {
+		t.Fatal("expected failure message for zero-match region")
+	}
+}
+
+func TestAggregateRecognizedRecruitmentTagsRejectsMultiMatchRegion(t *testing.T) {
+	_, ok, message := aggregateRecognizedRecruitmentTags([]RecognitionRegionMatchResult{
+		{
+			RegionID: "region-01",
+			MatchedStates: []RecognitionRegionStateMatchItem{
+				{StateID: "state-01", Tag: "\u8fd1\u536b"},
+				{StateID: "state-02", Tag: "\u72d9\u51fb"},
+			},
+		},
+	})
+	if ok {
+		t.Fatal("expected multi-match region to fail aggregation")
+	}
+	if message == "" {
+		t.Fatal("expected failure message for multi-match region")
+	}
+}
+
+func TestRunPublicRecruitmentRecognitionReturnsNoTemplateFailure(t *testing.T) {
+	app := NewApp()
+	result, err := app.RunPublicRecruitmentRecognition(PublicRecruitmentRecognitionRequest{})
+	if err != nil {
+		t.Fatalf("RunPublicRecruitmentRecognition returned error: %v", err)
+	}
+	if result.Success {
+		t.Fatal("expected empty template id to fail")
+	}
+	if result.FailureReason != publicRecruitmentRecognitionFailureNoTemplate {
+		t.Fatalf("expected no_template failure, got %s", result.FailureReason)
+	}
+}
+
+func TestRunPublicRecruitmentRecognitionReturnsWindowResolutionFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		failureReason string
+	}{
+		{name: "no window", failureReason: publicRecruitmentRecognitionFailureNoWindow},
+		{name: "ambiguous window", failureReason: publicRecruitmentRecognitionFailureAmbiguousWindow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			templateID := prepareRecognitionTemplateFixture(t, recognitionTemplateFixture{
+				regions: []recognitionTemplateFixtureRegion{
+					{
+						id:    "region-01",
+						label: "slot-1",
+						taggedStates: []recognitionTemplateFixtureState{
+							{id: "state-01", tag: "\u8fd1\u536b", fill: color.NRGBA{R: 255, A: 255}},
+						},
+					},
+				},
+			})
+
+			originalResolve := resolveWindowInstanceFunc
+			defer func() {
+				resolveWindowInstanceFunc = originalResolve
+			}()
+			resolveWindowInstanceFunc = func(template RecognitionTemplate) (uintptr, string, error) {
+				return 0, tc.failureReason, os.ErrNotExist
+			}
+
+			app := NewApp()
+			result, err := app.RunPublicRecruitmentRecognition(PublicRecruitmentRecognitionRequest{TemplateID: templateID})
+			if err != nil {
+				t.Fatalf("RunPublicRecruitmentRecognition returned error: %v", err)
+			}
+			if result.Success {
+				t.Fatal("expected recognition to fail when window resolution fails")
+			}
+			if result.FailureReason != tc.failureReason {
+				t.Fatalf("expected failure reason %s, got %s", tc.failureReason, result.FailureReason)
+			}
+		})
+	}
+}
+
+func TestRunPublicRecruitmentRecognitionReturnsRecognizedTagsOnUniqueMatch(t *testing.T) {
+	templateID := prepareRecognitionTemplateFixture(t, recognitionTemplateFixture{
+		regions: []recognitionTemplateFixtureRegion{
+			{
+				id:    "region-01",
+				label: "slot-1",
+				taggedStates: []recognitionTemplateFixtureState{
+					{id: "state-01", tag: "\u8fd1\u536b", fill: color.NRGBA{R: 255, A: 255}},
+				},
+			},
+		},
+	})
+
+	originalResolve := resolveWindowInstanceFunc
+	originalCapture := captureWindowPNGFunc
+	defer func() {
+		resolveWindowInstanceFunc = originalResolve
+		captureWindowPNGFunc = originalCapture
+	}()
+
+	resolveWindowInstanceFunc = func(template RecognitionTemplate) (uintptr, string, error) {
+		return 4321, publicRecruitmentRecognitionFailureNone, nil
+	}
+	captureWindowPNGFunc = func(hwnd uintptr) ([]byte, int, int, error) {
+		img := image.NewNRGBA(image.Rect(0, 0, 2, 2))
+		fillTestRect(img, img.Bounds(), color.NRGBA{R: 255, A: 255})
+		return mustEncodePNGForTest(t, img), 2, 2, nil
+	}
+
+	app := NewApp()
+	result, err := app.RunPublicRecruitmentRecognition(PublicRecruitmentRecognitionRequest{TemplateID: templateID})
+	if err != nil {
+		t.Fatalf("RunPublicRecruitmentRecognition returned error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("expected recognition success, got %+v", result)
+	}
+	if len(result.RecognizedTags) != 1 || result.RecognizedTags[0] != "\u8fd1\u536b" {
+		t.Fatalf("unexpected recognized tags: %#v", result.RecognizedTags)
+	}
+}
+
+func TestRunPublicRecruitmentRecognitionRejectsZeroAndMultiMatchRuns(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		template       recognitionTemplateFixture
+		screenshotFill color.NRGBA
+	}{
+		{
+			name: "zero match",
+			template: recognitionTemplateFixture{
+				regions: []recognitionTemplateFixtureRegion{
+					{
+						id:    "region-01",
+						label: "slot-1",
+						taggedStates: []recognitionTemplateFixtureState{
+							{id: "state-01", tag: "\u8fd1\u536b", fill: color.NRGBA{R: 255, A: 255}},
+						},
+					},
+				},
+			},
+			screenshotFill: color.NRGBA{B: 255, A: 255},
+		},
+		{
+			name: "multi match",
+			template: recognitionTemplateFixture{
+				regions: []recognitionTemplateFixtureRegion{
+					{
+						id:    "region-01",
+						label: "slot-1",
+						taggedStates: []recognitionTemplateFixtureState{
+							{id: "state-01", tag: "\u8fd1\u536b", fill: color.NRGBA{R: 255, A: 255}},
+							{id: "state-02", tag: "\u8f93\u51fa", fill: color.NRGBA{R: 255, A: 255}},
+						},
+					},
+				},
+			},
+			screenshotFill: color.NRGBA{R: 255, A: 255},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			templateID := prepareRecognitionTemplateFixture(t, tc.template)
+
+			originalResolve := resolveWindowInstanceFunc
+			originalCapture := captureWindowPNGFunc
+			defer func() {
+				resolveWindowInstanceFunc = originalResolve
+				captureWindowPNGFunc = originalCapture
+			}()
+
+			resolveWindowInstanceFunc = func(template RecognitionTemplate) (uintptr, string, error) {
+				return 8765, publicRecruitmentRecognitionFailureNone, nil
+			}
+			captureWindowPNGFunc = func(hwnd uintptr) ([]byte, int, int, error) {
+				img := image.NewNRGBA(image.Rect(0, 0, 2, 2))
+				fillTestRect(img, img.Bounds(), tc.screenshotFill)
+				return mustEncodePNGForTest(t, img), 2, 2, nil
+			}
+
+			app := NewApp()
+			result, err := app.RunPublicRecruitmentRecognition(PublicRecruitmentRecognitionRequest{TemplateID: templateID})
+			if err != nil {
+				t.Fatalf("RunPublicRecruitmentRecognition returned error: %v", err)
+			}
+			if result.Success {
+				t.Fatalf("expected recognition failure for %s, got %+v", tc.name, result)
+			}
+			if result.FailureReason != publicRecruitmentRecognitionFailureIncompleteMatch {
+				t.Fatalf("expected incomplete_match failure, got %s", result.FailureReason)
+			}
+			if len(result.RecognizedTags) != 0 {
+				t.Fatalf("expected no recognized tags, got %#v", result.RecognizedTags)
+			}
+		})
+	}
+}
+
+type recognitionTemplateFixture struct {
+	regions []recognitionTemplateFixtureRegion
+}
+
+type recognitionTemplateFixtureRegion struct {
+	id           string
+	label        string
+	taggedStates []recognitionTemplateFixtureState
+}
+
+type recognitionTemplateFixtureState struct {
+	id   string
+	tag  string
+	fill color.NRGBA
+}
+
+func prepareRecognitionTemplateFixture(t *testing.T, fixture recognitionTemplateFixture) string {
+	t.Helper()
+
+	originalWorkingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("failed to change working directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(originalWorkingDir); chdirErr != nil {
+			t.Fatalf("failed to restore working directory: %v", chdirErr)
+		}
+	})
+
+	templateID := "fixture-template"
+	templateDir := filepath.Join(tempDir, recognitionTemplateDirName, templateID)
+	if err := os.MkdirAll(filepath.Join(templateDir, "regions"), 0o755); err != nil {
+		t.Fatalf("failed to create template dir: %v", err)
+	}
+
+	windowImage := image.NewNRGBA(image.Rect(0, 0, 2, 2))
+	fillTestRect(windowImage, windowImage.Bounds(), color.NRGBA{R: 10, G: 20, B: 30, A: 255})
+	if err := os.WriteFile(filepath.Join(templateDir, "window.png"), mustEncodePNGForTest(t, windowImage), 0o644); err != nil {
+		t.Fatalf("failed to write window image: %v", err)
+	}
+
+	regions := make([]RecognitionRegion, 0, len(fixture.regions))
+	for _, region := range fixture.regions {
+		regionDir := filepath.Join(templateDir, "regions", region.id)
+		if err := os.MkdirAll(regionDir, 0o755); err != nil {
+			t.Fatalf("failed to create region dir: %v", err)
+		}
+
+		states := make([]RecognitionRegionState, 0, len(region.taggedStates))
+		for _, state := range region.taggedStates {
+			stateImage := image.NewNRGBA(image.Rect(0, 0, 2, 2))
+			fillTestRect(stateImage, stateImage.Bounds(), state.fill)
+			stateFilename := state.id + ".png"
+			statePath := filepath.Join(regionDir, stateFilename)
+			if err := os.WriteFile(statePath, mustEncodePNGForTest(t, stateImage), 0o644); err != nil {
+				t.Fatalf("failed to write state image: %v", err)
+			}
+			states = append(states, RecognitionRegionState{
+				ID:            state.id,
+				Tag:           state.tag,
+				ReferencePath: filepath.ToSlash(filepath.Join("regions", region.id, stateFilename)),
+				CreatedAt:     time.Now().Format(time.RFC3339),
+			})
+		}
+
+		regions = append(regions, RecognitionRegion{
+			ID:     region.id,
+			Label:  region.label,
+			X:      0,
+			Y:      0,
+			Width:  1,
+			Height: 1,
+			States: states,
+		})
+	}
+
+	template := RecognitionTemplate{
+		ID:             templateID,
+		Hwnd:           1234,
+		Title:          "fixture-window",
+		ClassName:      "fixture-class",
+		Width:          2,
+		Height:         2,
+		ScreenshotPath: "window.png",
+		CreatedAt:      time.Now().Format(time.RFC3339),
+		Regions:        regions,
+	}
+	if err := saveRecognitionTemplateMetadata(templateDir, template); err != nil {
+		t.Fatalf("failed to write template metadata: %v", err)
+	}
+
+	return templateID
 }
 
 func fillTestRect(img *image.NRGBA, rect image.Rectangle, fill color.NRGBA) {
