@@ -1,4 +1,4 @@
-﻿<template>
+<template>
     <div class="app-shell">
         <el-drawer v-model="drawerOpen" direction="ltr" size="280px" class="app-drawer">
             <template #header>
@@ -43,7 +43,8 @@
             <section class="page-body">
                 <WindowToolsPage v-if="activePage === 'window-tools'" />
                 <OperatorDataPage v-else-if="activePage === 'operator-data'" />
-                <PublicRecruitmentPage v-else />
+                <PublicRecruitmentPage v-else-if="activePage === 'public-recruitment'" />
+                <RecognitionSettingsPage v-else />
             </section>
         </main>
     </div>
@@ -53,6 +54,7 @@
 import { computed, ref } from 'vue'
 import OperatorDataPage from './components/OperatorDataPage.vue'
 import PublicRecruitmentPage from './components/PublicRecruitmentPage.vue'
+import RecognitionSettingsPage from './components/RecognitionSettingsPage.vue'
 import WindowToolsPage from './components/WindowToolsPage.vue'
 
 const navigationItems = [
@@ -73,6 +75,12 @@ const navigationItems = [
         label: '公开招募',
         shortLabel: 'PR',
         description: '选择公开招募标签并查看全部有效组合对应的干员结果。',
+    },
+    {
+        key: 'recognition-settings',
+        label: '识别设置',
+        shortLabel: 'RS',
+        description: '选择目标窗口、标注识别区域并保存用于后续匹配的窗口模板。',
     },
 ]
 

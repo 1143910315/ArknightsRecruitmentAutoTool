@@ -1,4 +1,4 @@
-﻿<template>
+<template>
     <div class="recruitment-page">
         <section class="hero-card panel">
             <div>

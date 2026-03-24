@@ -1,4 +1,4 @@
-﻿<template>
+<template>
     <div class="page-grid">
         <section class="panel panel-tree">
             <div class="panel-heading">

@@ -1,4 +1,4 @@
-﻿<template>
+<template>
     <div class="operator-page">
         <section class="hero-card panel">
             <div>

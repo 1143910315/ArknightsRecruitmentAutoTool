@@ -1,4 +1,4 @@
-﻿export const recruitmentTagGroups = [
+export const recruitmentTagGroups = [
   {
     key: 'profession',
     label: '职业',
