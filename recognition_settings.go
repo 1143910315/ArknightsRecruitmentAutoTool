@@ -102,8 +102,6 @@ type RecognitionMatchResult struct {
 	Results    []RecognitionRegionMatchResult `json:"results"`
 }
 
-var printWindow = user32.NewProc("PrintWindow")
-
 func (a *App) CaptureWindowForRecognition(hwnd uintptr) (RecognitionWindowCaptureResult, error) {
 	if hwnd == 0 {
 		return RecognitionWindowCaptureResult{}, errors.New("invalid window handle")
@@ -476,53 +474,114 @@ func sameColor(left color.Color, right color.Color) bool {
 }
 
 func writePNG(targetPath string, img image.Image) error {
-	var buffer bytes.Buffer
-	if err := png.Encode(&buffer, img); err != nil {
+	imageBytes, err := encodePNG(img)
+	if err != nil {
 		return err
 	}
-	return os.WriteFile(targetPath, buffer.Bytes(), 0o644)
+	return os.WriteFile(targetPath, imageBytes, 0o644)
 }
 
 func captureWindowPNG(hwnd uintptr) ([]byte, int, int, error) {
 	window := win.HWND(hwnd)
 
-	var rect win.RECT
-	if !win.GetWindowRect(window, &rect) {
-		return nil, 0, 0, errors.New("failed to get window bounds")
+	windowRect, err := getWindowRect(window)
+	if err != nil {
+		return nil, 0, 0, err
 	}
-
-	width := int(rect.Right - rect.Left)
-	height := int(rect.Bottom - rect.Top)
-	if width <= 0 || height <= 0 {
+	if windowRect.Dx() <= 0 || windowRect.Dy() <= 0 {
 		return nil, 0, 0, errors.New("window size is invalid")
 	}
 
-	windowDC := win.GetDC(window)
-	if windowDC == 0 {
-		return nil, 0, 0, errors.New("failed to get window dc")
+	screenSnapshot, err := captureScreenSnapshot()
+	if err != nil {
+		return nil, 0, 0, err
 	}
-	defer win.ReleaseDC(window, windowDC)
 
-	memoryDC := win.CreateCompatibleDC(windowDC)
+	windowImage, err := cropImageRect(screenSnapshot, windowRect)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+
+	imageBytes, err := encodePNG(windowImage)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+
+	return imageBytes, windowImage.Bounds().Dx(), windowImage.Bounds().Dy(), nil
+}
+
+func getWindowRect(window win.HWND) (image.Rectangle, error) {
+	var rect win.RECT
+	if !win.GetWindowRect(window, &rect) {
+		return image.Rectangle{}, errors.New("failed to get window bounds")
+	}
+	return image.Rect(int(rect.Left), int(rect.Top), int(rect.Right), int(rect.Bottom)), nil
+}
+
+func captureScreenSnapshot() (*image.NRGBA, error) {
+	screenRect := getVirtualScreenRect()
+	width := screenRect.Dx()
+	height := screenRect.Dy()
+	if width <= 0 || height <= 0 {
+		return nil, errors.New("screen size is invalid")
+	}
+
+	screenDC := win.GetDC(0)
+	if screenDC == 0 {
+		return nil, errors.New("failed to get screen dc")
+	}
+	defer win.ReleaseDC(0, screenDC)
+
+	memoryDC := win.CreateCompatibleDC(screenDC)
 	if memoryDC == 0 {
-		return nil, 0, 0, errors.New("failed to create memory dc")
+		return nil, errors.New("failed to create memory dc")
 	}
 	defer win.DeleteDC(memoryDC)
 
-	bitmap := win.CreateCompatibleBitmap(windowDC, int32(width), int32(height))
+	bitmap := win.CreateCompatibleBitmap(screenDC, int32(width), int32(height))
 	if bitmap == 0 {
-		return nil, 0, 0, errors.New("failed to create bitmap")
+		return nil, errors.New("failed to create bitmap")
 	}
 	defer win.DeleteObject(win.HGDIOBJ(bitmap))
 
 	oldObject := win.SelectObject(memoryDC, win.HGDIOBJ(bitmap))
 	defer win.SelectObject(memoryDC, oldObject)
 
-	success, _, _ := printWindow.Call(uintptr(window), uintptr(memoryDC), uintptr(0))
-	if success == 0 {
-		if !win.BitBlt(memoryDC, 0, 0, int32(width), int32(height), windowDC, 0, 0, win.SRCCOPY) {
-			return nil, 0, 0, errors.New("failed to capture window image")
+	if !win.BitBlt(memoryDC, 0, 0, int32(width), int32(height), screenDC, int32(screenRect.Min.X), int32(screenRect.Min.Y), win.SRCCOPY) {
+		return nil, errors.New("failed to capture screen image")
+	}
+
+	pixelBytes, err := readBitmapPixels(memoryDC, bitmap, width, height)
+	if err != nil {
+		return nil, err
+	}
+
+	imageBuffer := image.NewNRGBA(screenRect)
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			sourceOffset := (y*width + x) * 4
+			destOffset := imageBuffer.PixOffset(screenRect.Min.X+x, screenRect.Min.Y+y)
+			imageBuffer.Pix[destOffset+0] = pixelBytes[sourceOffset+2]
+			imageBuffer.Pix[destOffset+1] = pixelBytes[sourceOffset+1]
+			imageBuffer.Pix[destOffset+2] = pixelBytes[sourceOffset+0]
+			imageBuffer.Pix[destOffset+3] = pixelBytes[sourceOffset+3]
 		}
+	}
+
+	return imageBuffer, nil
+}
+
+func getVirtualScreenRect() image.Rectangle {
+	left := int(win.GetSystemMetrics(win.SM_XVIRTUALSCREEN))
+	top := int(win.GetSystemMetrics(win.SM_YVIRTUALSCREEN))
+	width := int(win.GetSystemMetrics(win.SM_CXVIRTUALSCREEN))
+	height := int(win.GetSystemMetrics(win.SM_CYVIRTUALSCREEN))
+	return image.Rect(left, top, left+width, top+height)
+}
+
+func readBitmapPixels(memoryDC win.HDC, bitmap win.HBITMAP, width, height int) ([]byte, error) {
+	if width <= 0 || height <= 0 {
+		return nil, errors.New("bitmap size is invalid")
 	}
 
 	var bitmapInfo win.BITMAPINFO
@@ -535,21 +594,27 @@ func captureWindowPNG(hwnd uintptr) ([]byte, int, int, error) {
 
 	pixelBytes := make([]byte, width*height*4)
 	if win.GetDIBits(memoryDC, bitmap, 0, uint32(height), &pixelBytes[0], &bitmapInfo, win.DIB_RGB_COLORS) == 0 {
-		return nil, 0, 0, errors.New("failed to read bitmap pixels")
+		return nil, errors.New("failed to read bitmap pixels")
 	}
 
-	imageBuffer := image.NewNRGBA(image.Rect(0, 0, width, height))
-	for index := 0; index < len(pixelBytes); index += 4 {
-		imageBuffer.Pix[index+0] = pixelBytes[index+2]
-		imageBuffer.Pix[index+1] = pixelBytes[index+1]
-		imageBuffer.Pix[index+2] = pixelBytes[index+0]
-		imageBuffer.Pix[index+3] = pixelBytes[index+3]
+	return pixelBytes, nil
+}
+
+func cropImageRect(src image.Image, target image.Rectangle) (*image.NRGBA, error) {
+	visibleRect := src.Bounds().Intersect(target)
+	if visibleRect.Empty() {
+		return nil, errors.New("window has no visible intersection with screen snapshot")
 	}
 
+	dst := image.NewNRGBA(image.Rect(0, 0, visibleRect.Dx(), visibleRect.Dy()))
+	draw.Draw(dst, dst.Bounds(), src, visibleRect.Min, draw.Src)
+	return dst, nil
+}
+
+func encodePNG(img image.Image) ([]byte, error) {
 	var buffer bytes.Buffer
-	if err := png.Encode(&buffer, imageBuffer); err != nil {
-		return nil, 0, 0, err
+	if err := png.Encode(&buffer, img); err != nil {
+		return nil, err
 	}
-
-	return buffer.Bytes(), width, height, nil
+	return buffer.Bytes(), nil
 }
