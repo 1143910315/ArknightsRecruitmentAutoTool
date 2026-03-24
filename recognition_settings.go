@@ -35,12 +35,19 @@ type RecognitionWindowCaptureResult struct {
 }
 
 type RecognitionRegionInput struct {
-	ID     string  `json:"id"`
-	Label  string  `json:"label"`
-	X      float64 `json:"x"`
-	Y      float64 `json:"y"`
-	Width  float64 `json:"width"`
-	Height float64 `json:"height"`
+	ID     string                        `json:"id"`
+	Label  string                        `json:"label"`
+	X      float64                       `json:"x"`
+	Y      float64                       `json:"y"`
+	Width  float64                       `json:"width"`
+	Height float64                       `json:"height"`
+	States []RecognitionRegionStateInput `json:"states"`
+}
+
+type RecognitionRegionStateInput struct {
+	ID       string `json:"id"`
+	Tag      string `json:"tag"`
+	ImagePNG string `json:"imagePng"`
 }
 
 type RecognitionTemplateInput struct {
@@ -55,13 +62,21 @@ type RecognitionTemplateInput struct {
 }
 
 type RecognitionRegion struct {
-	ID            string  `json:"id"`
-	Label         string  `json:"label"`
-	X             float64 `json:"x"`
-	Y             float64 `json:"y"`
-	Width         float64 `json:"width"`
-	Height        float64 `json:"height"`
-	ReferencePath string  `json:"referencePath"`
+	ID     string                   `json:"id"`
+	Label  string                   `json:"label"`
+	X      float64                  `json:"x"`
+	Y      float64                  `json:"y"`
+	Width  float64                  `json:"width"`
+	Height float64                  `json:"height"`
+	States []RecognitionRegionState `json:"states"`
+}
+
+type RecognitionRegionState struct {
+	ID            string `json:"id"`
+	Tag           string `json:"tag"`
+	ReferencePath string `json:"referencePath"`
+	ReferencePNG  string `json:"referencePng,omitempty"`
+	CreatedAt     string `json:"createdAt,omitempty"`
 }
 
 type RecognitionTemplateSummary struct {
@@ -86,9 +101,15 @@ type RecognitionTemplate struct {
 }
 
 type RecognitionRegionMatchResult struct {
-	RegionID string `json:"regionId"`
-	Label    string `json:"label"`
-	Match    bool   `json:"match"`
+	RegionID      string                            `json:"regionId"`
+	Label         string                            `json:"label"`
+	Match         bool                              `json:"match"`
+	MatchedStates []RecognitionRegionStateMatchItem `json:"matchedStates"`
+}
+
+type RecognitionRegionStateMatchItem struct {
+	StateID string `json:"stateId"`
+	Tag     string `json:"tag"`
 }
 
 type RecognitionMatchRequest struct {
@@ -136,11 +157,6 @@ func (a *App) SaveRecognitionTemplate(input RecognitionTemplateInput) (Recogniti
 		return RecognitionTemplate{}, fmt.Errorf("failed to decode screenshot: %w", err)
 	}
 
-	screenshotImage, err := png.Decode(bytes.NewReader(screenshotBytes))
-	if err != nil {
-		return RecognitionTemplate{}, fmt.Errorf("failed to decode screenshot png: %w", err)
-	}
-
 	templateID := strings.TrimSpace(input.ID)
 	if templateID == "" {
 		templateID = buildRecognitionTemplateID(input.Title, input.ClassName)
@@ -169,28 +185,28 @@ func (a *App) SaveRecognitionTemplate(input RecognitionTemplateInput) (Recogniti
 			return RecognitionTemplate{}, fmt.Errorf("invalid region %d: %w", index+1, err)
 		}
 
-		regionImage, err := cropNormalizedRegion(screenshotImage, normalized.X, normalized.Y, normalized.Width, normalized.Height)
-		if err != nil {
-			return RecognitionTemplate{}, fmt.Errorf("failed to crop region %d: %w", index+1, err)
-		}
-
 		regionID := normalized.ID
 		if regionID == "" {
 			regionID = fmt.Sprintf("region-%02d", index+1)
 		}
-		referencePath := filepath.Join(regionDir, regionID+".png")
-		if err := writePNG(referencePath, regionImage); err != nil {
-			return RecognitionTemplate{}, fmt.Errorf("failed to save region image: %w", err)
+		regionStateDir := filepath.Join(regionDir, regionID)
+		if err := os.MkdirAll(regionStateDir, 0o755); err != nil {
+			return RecognitionTemplate{}, fmt.Errorf("failed to prepare region state directory: %w", err)
+		}
+
+		states, err := saveRecognitionRegionStates(regionStateDir, regionID, normalized)
+		if err != nil {
+			return RecognitionTemplate{}, fmt.Errorf("failed to save region %d states: %w", index+1, err)
 		}
 
 		regions = append(regions, RecognitionRegion{
-			ID:            regionID,
-			Label:         normalized.Label,
-			X:             normalized.X,
-			Y:             normalized.Y,
-			Width:         normalized.Width,
-			Height:        normalized.Height,
-			ReferencePath: filepath.ToSlash(filepath.Join("regions", regionID+".png")),
+			ID:     regionID,
+			Label:  normalized.Label,
+			X:      normalized.X,
+			Y:      normalized.Y,
+			Width:  normalized.Width,
+			Height: normalized.Height,
+			States: states,
 		})
 	}
 
@@ -267,6 +283,9 @@ func (a *App) GetRecognitionTemplate(id string) (RecognitionTemplate, error) {
 		return RecognitionTemplate{}, err
 	}
 	template.ScreenshotPNG = base64.StdEncoding.EncodeToString(screenshotBytes)
+	if err := attachRecognitionStateImages(&template, templateDir); err != nil {
+		return RecognitionTemplate{}, err
+	}
 	return template, nil
 }
 
@@ -302,25 +321,21 @@ func (a *App) MatchRecognitionTemplate(input RecognitionMatchRequest) (Recogniti
 	for _, region := range template.Regions {
 		currentRegion, err := cropNormalizedRegion(screenshotImage, region.X, region.Y, region.Width, region.Height)
 		if err != nil {
-			results = append(results, RecognitionRegionMatchResult{RegionID: region.ID, Label: region.Label, Match: false})
+			results = append(results, RecognitionRegionMatchResult{
+				RegionID:      region.ID,
+				Label:         region.Label,
+				Match:         false,
+				MatchedStates: []RecognitionRegionStateMatchItem{},
+			})
 			continue
 		}
 
-		referenceBytes, err := os.ReadFile(filepath.Join(templateDir, filepath.FromSlash(region.ReferencePath)))
-		if err != nil {
-			results = append(results, RecognitionRegionMatchResult{RegionID: region.ID, Label: region.Label, Match: false})
-			continue
-		}
-		referenceImage, err := png.Decode(bytes.NewReader(referenceBytes))
-		if err != nil {
-			results = append(results, RecognitionRegionMatchResult{RegionID: region.ID, Label: region.Label, Match: false})
-			continue
-		}
-
+		matchedStates := matchRecognitionRegionStates(templateDir, currentRegion, region.States)
 		results = append(results, RecognitionRegionMatchResult{
-			RegionID: region.ID,
-			Label:    region.Label,
-			Match:    compareImages(currentRegion, referenceImage),
+			RegionID:      region.ID,
+			Label:         region.Label,
+			Match:         len(matchedStates) > 0,
+			MatchedStates: matchedStates,
 		})
 	}
 
@@ -360,12 +375,22 @@ func sanitizeRecognitionID(id string) string {
 }
 
 func normalizeRegionInput(input RecognitionRegionInput) (RecognitionRegionInput, error) {
-	if strings.TrimSpace(input.Label) == "" {
-		return RecognitionRegionInput{}, errors.New("label is required")
-	}
 	if input.Width <= 0 || input.Height <= 0 {
 		return RecognitionRegionInput{}, errors.New("region width and height must be positive")
 	}
+	if len(input.States) == 0 {
+		return RecognitionRegionInput{}, errors.New("at least one region state is required")
+	}
+
+	states := make([]RecognitionRegionStateInput, 0, len(input.States))
+	for index, state := range input.States {
+		normalizedState, err := normalizeRegionStateInput(state)
+		if err != nil {
+			return RecognitionRegionInput{}, fmt.Errorf("invalid state %d: %w", index+1, err)
+		}
+		states = append(states, normalizedState)
+	}
+
 	normalized := RecognitionRegionInput{
 		ID:     strings.TrimSpace(input.ID),
 		Label:  strings.TrimSpace(input.Label),
@@ -373,6 +398,7 @@ func normalizeRegionInput(input RecognitionRegionInput) (RecognitionRegionInput,
 		Y:      clamp01(input.Y),
 		Width:  clamp01(input.Width),
 		Height: clamp01(input.Height),
+		States: states,
 	}
 	if normalized.X >= 1 || normalized.Y >= 1 {
 		return RecognitionRegionInput{}, errors.New("region origin is out of bounds")
@@ -385,6 +411,24 @@ func normalizeRegionInput(input RecognitionRegionInput) (RecognitionRegionInput,
 	}
 	if normalized.Width <= 0 || normalized.Height <= 0 {
 		return RecognitionRegionInput{}, errors.New("region area is empty after normalization")
+	}
+	return normalized, nil
+}
+
+func normalizeRegionStateInput(input RecognitionRegionStateInput) (RecognitionRegionStateInput, error) {
+	normalized := RecognitionRegionStateInput{
+		ID:       strings.TrimSpace(input.ID),
+		Tag:      strings.TrimSpace(input.Tag),
+		ImagePNG: strings.TrimSpace(input.ImagePNG),
+	}
+	if normalized.Tag == "" {
+		return RecognitionRegionStateInput{}, errors.New("state tag is required")
+	}
+	if !isRecruitmentTag(normalized.Tag) {
+		return RecognitionRegionStateInput{}, fmt.Errorf("unsupported recruitment tag: %s", normalized.Tag)
+	}
+	if normalized.ImagePNG == "" {
+		return RecognitionRegionStateInput{}, errors.New("state image is required")
 	}
 	return normalized, nil
 }
@@ -413,11 +457,174 @@ func readRecognitionTemplate(templateDir string) (RecognitionTemplate, error) {
 	if err != nil {
 		return RecognitionTemplate{}, err
 	}
+	return decodeRecognitionTemplate(raw)
+}
+
+type legacyRecognitionTemplate struct {
+	ID             string                    `json:"id"`
+	Hwnd           uintptr                   `json:"hwnd"`
+	Title          string                    `json:"title"`
+	ClassName      string                    `json:"className"`
+	Width          int                       `json:"width"`
+	Height         int                       `json:"height"`
+	ScreenshotPath string                    `json:"screenshotPath"`
+	ScreenshotPNG  string                    `json:"screenshotPng,omitempty"`
+	CreatedAt      string                    `json:"createdAt"`
+	Regions        []legacyRecognitionRegion `json:"regions"`
+}
+
+type legacyRecognitionRegion struct {
+	ID            string  `json:"id"`
+	Label         string  `json:"label"`
+	X             float64 `json:"x"`
+	Y             float64 `json:"y"`
+	Width         float64 `json:"width"`
+	Height        float64 `json:"height"`
+	ReferencePath string  `json:"referencePath"`
+}
+
+func decodeRecognitionTemplate(raw []byte) (RecognitionTemplate, error) {
 	var template RecognitionTemplate
-	if err := json.Unmarshal(raw, &template); err != nil {
+	if err := json.Unmarshal(raw, &template); err == nil && recognitionTemplateHasStates(template) {
+		return template, nil
+	}
+
+	var legacy legacyRecognitionTemplate
+	if err := json.Unmarshal(raw, &legacy); err != nil {
 		return RecognitionTemplate{}, err
 	}
-	return template, nil
+	return normalizeLegacyRecognitionTemplate(legacy), nil
+}
+
+func recognitionTemplateHasStates(template RecognitionTemplate) bool {
+	if len(template.Regions) == 0 {
+		return true
+	}
+	for _, region := range template.Regions {
+		if len(region.States) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeLegacyRecognitionTemplate(legacy legacyRecognitionTemplate) RecognitionTemplate {
+	regions := make([]RecognitionRegion, 0, len(legacy.Regions))
+	for _, region := range legacy.Regions {
+		tag := ""
+		if isRecruitmentTag(strings.TrimSpace(region.Label)) {
+			tag = strings.TrimSpace(region.Label)
+		}
+		states := []RecognitionRegionState{}
+		if strings.TrimSpace(region.ReferencePath) != "" {
+			states = append(states, RecognitionRegionState{
+				ID:            defaultRegionStateID(region.ID, 1),
+				Tag:           tag,
+				ReferencePath: filepath.ToSlash(region.ReferencePath),
+			})
+		}
+		regions = append(regions, RecognitionRegion{
+			ID:     region.ID,
+			Label:  region.Label,
+			X:      region.X,
+			Y:      region.Y,
+			Width:  region.Width,
+			Height: region.Height,
+			States: states,
+		})
+	}
+	return RecognitionTemplate{
+		ID:             legacy.ID,
+		Hwnd:           legacy.Hwnd,
+		Title:          legacy.Title,
+		ClassName:      legacy.ClassName,
+		Width:          legacy.Width,
+		Height:         legacy.Height,
+		ScreenshotPath: legacy.ScreenshotPath,
+		ScreenshotPNG:  legacy.ScreenshotPNG,
+		CreatedAt:      legacy.CreatedAt,
+		Regions:        regions,
+	}
+}
+
+func saveRecognitionRegionStates(regionStateDir string, regionID string, region RecognitionRegionInput) ([]RecognitionRegionState, error) {
+	states := make([]RecognitionRegionState, 0, len(region.States))
+	for index, state := range region.States {
+		stateID := state.ID
+		if stateID == "" {
+			stateID = defaultRegionStateID(region.ID, index+1)
+		}
+
+		stateBytes, err := base64.StdEncoding.DecodeString(state.ImagePNG)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode state image: %w", err)
+		}
+		stateImage, err := png.Decode(bytes.NewReader(stateBytes))
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode state png: %w", err)
+		}
+
+		statePath := filepath.Join(regionStateDir, stateID+".png")
+		if err := writePNG(statePath, stateImage); err != nil {
+			return nil, fmt.Errorf("failed to write state image: %w", err)
+		}
+
+		states = append(states, RecognitionRegionState{
+			ID:            stateID,
+			Tag:           state.Tag,
+			ReferencePath: filepath.ToSlash(filepath.Join("regions", regionID, stateID+".png")),
+			CreatedAt:     time.Now().Format(time.RFC3339),
+		})
+	}
+	return states, nil
+}
+
+func defaultRegionStateID(regionID string, index int) string {
+	base := strings.TrimSpace(regionID)
+	if base == "" {
+		base = "region"
+	}
+	return fmt.Sprintf("%s-state-%02d", base, index)
+}
+
+func attachRecognitionStateImages(template *RecognitionTemplate, templateDir string) error {
+	for regionIndex, region := range template.Regions {
+		for stateIndex, state := range region.States {
+			if strings.TrimSpace(state.ReferencePath) == "" {
+				continue
+			}
+			stateBytes, err := os.ReadFile(filepath.Join(templateDir, filepath.FromSlash(state.ReferencePath)))
+			if err != nil {
+				return err
+			}
+			template.Regions[regionIndex].States[stateIndex].ReferencePNG = base64.StdEncoding.EncodeToString(stateBytes)
+		}
+	}
+	return nil
+}
+
+func matchRecognitionRegionStates(templateDir string, currentRegion image.Image, states []RecognitionRegionState) []RecognitionRegionStateMatchItem {
+	matchedStates := make([]RecognitionRegionStateMatchItem, 0)
+	for _, state := range states {
+		if strings.TrimSpace(state.ReferencePath) == "" {
+			continue
+		}
+		referenceBytes, err := os.ReadFile(filepath.Join(templateDir, filepath.FromSlash(state.ReferencePath)))
+		if err != nil {
+			continue
+		}
+		referenceImage, err := png.Decode(bytes.NewReader(referenceBytes))
+		if err != nil {
+			continue
+		}
+		if compareImages(currentRegion, referenceImage) {
+			matchedStates = append(matchedStates, RecognitionRegionStateMatchItem{
+				StateID: state.ID,
+				Tag:     state.Tag,
+			})
+		}
+	}
+	return matchedStates
 }
 
 func cropNormalizedRegion(img image.Image, x, y, width, height float64) (*image.NRGBA, error) {
