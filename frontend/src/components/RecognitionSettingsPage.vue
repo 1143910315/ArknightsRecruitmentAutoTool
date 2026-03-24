@@ -44,6 +44,7 @@
                 <p>类名: {{ capturedWindow.className || '(未选择)' }}</p>
                 <p>句柄: {{ capturedWindow.hwnd || 0 }}</p>
                 <p>区域数: {{ regions.length }}</p>
+                <p>每个状态图都可以单独配置图片匹配误差值，0 表示该状态图必须完全匹配。</p>
             </article>
         </section>
 
@@ -130,6 +131,18 @@
                                             </optgroup>
                                         </select>
                                     </label>
+                                    <label class="field-label">
+                                        图片匹配误差值
+                                        <input
+                                            v-model.number="state.tolerance"
+                                            class="field-input"
+                                            type="number"
+                                            min="0"
+                                            step="1"
+                                            placeholder="默认 0，表示完全匹配"
+                                        >
+                                    </label>
+                                    <p class="region-meta">该状态图按逐像素绝对差值比较，只有全部像素都小于此误差值时才算命中。</p>
                                     <p class="region-meta">状态 ID: {{ state.id }}</p>
                                 </div>
                                 <button class="danger-button" type="button" @click="removeState(region.id, state.id)">删除状态</button>
@@ -454,6 +467,7 @@ async function addStateToRegion(regionId) {
                         {
                             id: buildStateId(item),
                             tag: '',
+                            tolerance: 0,
                             imageBase64,
                         },
                     ],
@@ -501,6 +515,9 @@ function validateRegions() {
             if (!state.tag) {
                 return `区域 ${region.label || region.id} 存在未选择标签的状态图`
             }
+            if (!Number.isInteger(state.tolerance) || state.tolerance < 0) {
+                return `区域 ${region.label || region.id} 的状态 ${state.id} 误差值必须是大于等于 0 的整数`
+            }
             if (!state.imageBase64) {
                 return `区域 ${region.label || region.id} 存在空白状态图`
             }
@@ -542,6 +559,7 @@ async function saveTemplate() {
                 states: region.states.map((state) => ({
                     id: state.id,
                     tag: state.tag,
+                    tolerance: state.tolerance,
                     imagePng: state.imageBase64,
                 })),
             })),
@@ -600,6 +618,7 @@ async function openTemplate(templateId) {
             states: (region.states || []).map((state) => ({
                 id: state.id,
                 tag: state.tag,
+                tolerance: Number.isInteger(state.tolerance) && state.tolerance >= 0 ? state.tolerance : 0,
                 imageBase64: state.referencePng,
             })),
         }))

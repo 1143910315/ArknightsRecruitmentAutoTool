@@ -62,9 +62,10 @@ type RecognitionRegionInput struct {
 }
 
 type RecognitionRegionStateInput struct {
-	ID       string `json:"id"`
-	Tag      string `json:"tag"`
-	ImagePNG string `json:"imagePng"`
+	ID        string `json:"id"`
+	Tag       string `json:"tag"`
+	Tolerance int    `json:"tolerance"`
+	ImagePNG  string `json:"imagePng"`
 }
 
 type RecognitionTemplateInput struct {
@@ -91,6 +92,7 @@ type RecognitionRegion struct {
 type RecognitionRegionState struct {
 	ID            string `json:"id"`
 	Tag           string `json:"tag"`
+	Tolerance     int    `json:"tolerance"`
 	ReferencePath string `json:"referencePath"`
 	ReferencePNG  string `json:"referencePng,omitempty"`
 	CreatedAt     string `json:"createdAt,omitempty"`
@@ -537,15 +539,19 @@ func normalizeRegionInput(input RecognitionRegionInput) (RecognitionRegionInput,
 
 func normalizeRegionStateInput(input RecognitionRegionStateInput) (RecognitionRegionStateInput, error) {
 	normalized := RecognitionRegionStateInput{
-		ID:       strings.TrimSpace(input.ID),
-		Tag:      strings.TrimSpace(input.Tag),
-		ImagePNG: strings.TrimSpace(input.ImagePNG),
+		ID:        strings.TrimSpace(input.ID),
+		Tag:       strings.TrimSpace(input.Tag),
+		Tolerance: input.Tolerance,
+		ImagePNG:  strings.TrimSpace(input.ImagePNG),
 	}
 	if normalized.Tag == "" {
 		return RecognitionRegionStateInput{}, errors.New("state tag is required")
 	}
 	if !isRecruitmentTag(normalized.Tag) {
 		return RecognitionRegionStateInput{}, fmt.Errorf("unsupported recruitment tag: %s", normalized.Tag)
+	}
+	if normalized.Tolerance < 0 {
+		return RecognitionRegionStateInput{}, errors.New("state tolerance must be a valid non-negative number")
 	}
 	if normalized.ImagePNG == "" {
 		return RecognitionRegionStateInput{}, errors.New("state image is required")
@@ -641,6 +647,7 @@ func normalizeLegacyRecognitionTemplate(legacy legacyRecognitionTemplate) Recogn
 			states = append(states, RecognitionRegionState{
 				ID:            defaultRegionStateID(region.ID, 1),
 				Tag:           tag,
+				Tolerance:     0,
 				ReferencePath: filepath.ToSlash(region.ReferencePath),
 			})
 		}
@@ -858,6 +865,7 @@ func saveRecognitionRegionStates(regionStateDir string, regionID string, region 
 		states = append(states, RecognitionRegionState{
 			ID:            stateID,
 			Tag:           state.Tag,
+			Tolerance:     state.Tolerance,
 			ReferencePath: filepath.ToSlash(filepath.Join("regions", regionID, stateID+".png")),
 			CreatedAt:     time.Now().Format(time.RFC3339),
 		})
@@ -903,7 +911,7 @@ func matchRecognitionRegionStates(templateDir string, currentRegion image.Image,
 		if err != nil {
 			continue
 		}
-		if compareImages(currentRegion, referenceImage) {
+		if compareImages(currentRegion, referenceImage, state.Tolerance) {
 			matchedStates = append(matchedStates, RecognitionRegionStateMatchItem{
 				StateID: state.ID,
 				Tag:     state.Tag,
@@ -945,14 +953,14 @@ func cropNormalizedRegion(img image.Image, x, y, width, height float64) (*image.
 	return dst, nil
 }
 
-func compareImages(left image.Image, right image.Image) bool {
+func compareImages(left image.Image, right image.Image, tolerance int) bool {
 	if left.Bounds().Dx() != right.Bounds().Dx() || left.Bounds().Dy() != right.Bounds().Dy() {
 		return false
 	}
 	bounds := left.Bounds()
 	for y := 0; y < bounds.Dy(); y++ {
 		for x := 0; x < bounds.Dx(); x++ {
-			if !sameColor(left.At(bounds.Min.X+x, bounds.Min.Y+y), right.At(right.Bounds().Min.X+x, right.Bounds().Min.Y+y)) {
+			if !sameColor(left.At(bounds.Min.X+x, bounds.Min.Y+y), right.At(right.Bounds().Min.X+x, right.Bounds().Min.Y+y), tolerance) {
 				return false
 			}
 		}
@@ -960,10 +968,25 @@ func compareImages(left image.Image, right image.Image) bool {
 	return true
 }
 
-func sameColor(left color.Color, right color.Color) bool {
-	lr, lg, lb, la := left.RGBA()
-	rr, rg, rb, ra := right.RGBA()
-	return lr == rr && lg == rg && lb == rb && la == ra
+func sameColor(left color.Color, right color.Color, tolerance int) bool {
+	if tolerance <= 0 {
+		return color.NRGBAModel.Convert(left) == color.NRGBAModel.Convert(right)
+	}
+
+	leftColor := color.NRGBAModel.Convert(left).(color.NRGBA)
+	rightColor := color.NRGBAModel.Convert(right).(color.NRGBA)
+
+	return absInt(int(leftColor.R)-int(rightColor.R)) < tolerance &&
+		absInt(int(leftColor.G)-int(rightColor.G)) < tolerance &&
+		absInt(int(leftColor.B)-int(rightColor.B)) < tolerance &&
+		absInt(int(leftColor.A)-int(rightColor.A)) < tolerance
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func writePNG(targetPath string, img image.Image) error {

@@ -195,10 +195,10 @@ func TestGetRecruitmentTagCatalogIncludesStandardGroups(t *testing.T) {
 	if len(catalog.Groups) != 4 {
 		t.Fatalf("expected 4 recruitment tag groups, got %d", len(catalog.Groups))
 	}
-	if catalog.Groups[0].Label != "职业" {
-		t.Fatalf("expected first group to be 职业, got %s", catalog.Groups[0].Label)
+	if catalog.Groups[0].Label != "\u804c\u4e1a" {
+		t.Fatalf("expected first group to be profession group, got %s", catalog.Groups[0].Label)
 	}
-	if !isRecruitmentTag("近卫") || !isRecruitmentTag("高级资深干员") {
+	if !isRecruitmentTag("\u8fd1\u536b") || !isRecruitmentTag("\u9ad8\u7ea7\u8d44\u6df1\u5e72\u5458") {
 		t.Fatal("expected standard recruitment tags to be registered")
 	}
 }
@@ -216,7 +216,7 @@ func TestDecodeRecognitionTemplateSupportsLegacySingleStateRegions(t *testing.T)
 		Regions: []legacyRecognitionRegion{
 			{
 				ID:            "region-01",
-				Label:         "近卫",
+				Label:         "\u8fd1\u536b",
 				X:             0.1,
 				Y:             0.2,
 				Width:         0.3,
@@ -236,7 +236,10 @@ func TestDecodeRecognitionTemplateSupportsLegacySingleStateRegions(t *testing.T)
 	if len(template.Regions) != 1 || len(template.Regions[0].States) != 1 {
 		t.Fatalf("expected legacy template to normalize to one state, got %+v", template.Regions)
 	}
-	if template.Regions[0].States[0].Tag != "近卫" {
+	if template.Regions[0].States[0].Tolerance != 0 {
+		t.Fatalf("expected legacy state tolerance to default to 0, got %d", template.Regions[0].States[0].Tolerance)
+	}
+	if template.Regions[0].States[0].Tag != "\u8fd1\u536b" {
 		t.Fatalf("expected legacy tag to be preserved when valid, got %s", template.Regions[0].States[0].Tag)
 	}
 }
@@ -255,21 +258,81 @@ func TestMatchRecognitionRegionStatesReturnsMatchedTags(t *testing.T) {
 	}
 
 	matched := matchRecognitionRegionStates(templateDir, img, []RecognitionRegionState{
-		{ID: "state-01", Tag: "近卫", ReferencePath: "regions/region-01/state-01.png"},
-		{ID: "state-02", Tag: "狙击", ReferencePath: "regions/region-01/missing.png"},
+		{ID: "state-01", Tag: "\u8fd1\u536b", Tolerance: 0, ReferencePath: "regions/region-01/state-01.png"},
+		{ID: "state-02", Tag: "\u72d9\u51fb", Tolerance: 0, ReferencePath: "regions/region-01/missing.png"},
 	})
 	if len(matched) != 1 {
 		t.Fatalf("expected one matched state, got %#v", matched)
 	}
-	if matched[0].Tag != "近卫" {
-		t.Fatalf("expected matched tag 近卫, got %s", matched[0].Tag)
+	if matched[0].Tag != "\u8fd1\u536b" {
+		t.Fatalf("expected matched guard tag, got %s", matched[0].Tag)
+	}
+}
+
+func TestMatchRecognitionRegionStatesUsesPerStateTolerance(t *testing.T) {
+	templateDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(templateDir, "regions", "region-01"), 0o755); err != nil {
+		t.Fatalf("failed to create region dir: %v", err)
+	}
+
+	current := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	current.SetNRGBA(0, 0, color.NRGBA{R: 100, G: 120, B: 140, A: 255})
+
+	withinTolerance := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	withinTolerance.SetNRGBA(0, 0, color.NRGBA{R: 102, G: 121, B: 143, A: 255})
+	if err := os.WriteFile(filepath.Join(templateDir, "regions", "region-01", "state-01.png"), mustEncodePNGForTest(t, withinTolerance), 0o644); err != nil {
+		t.Fatalf("failed to write first state image: %v", err)
+	}
+
+	outsideTolerance := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	outsideTolerance.SetNRGBA(0, 0, color.NRGBA{R: 106, G: 120, B: 140, A: 255})
+	if err := os.WriteFile(filepath.Join(templateDir, "regions", "region-01", "state-02.png"), mustEncodePNGForTest(t, outsideTolerance), 0o644); err != nil {
+		t.Fatalf("failed to write second state image: %v", err)
+	}
+
+	matched := matchRecognitionRegionStates(templateDir, current, []RecognitionRegionState{
+		{ID: "state-01", Tag: "\u8fd1\u536b", Tolerance: 4, ReferencePath: "regions/region-01/state-01.png"},
+		{ID: "state-02", Tag: "\u72d9\u51fb", Tolerance: 4, ReferencePath: "regions/region-01/state-02.png"},
+	})
+	if len(matched) != 1 {
+		t.Fatalf("expected one matched state with per-state tolerance, got %#v", matched)
+	}
+	if matched[0].StateID != "state-01" {
+		t.Fatalf("expected only first state to match, got %#v", matched)
+	}
+}
+
+func TestCompareImagesWithTolerance(t *testing.T) {
+	base := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	base.SetNRGBA(0, 0, color.NRGBA{R: 100, G: 120, B: 140, A: 255})
+
+	exact := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	exact.SetNRGBA(0, 0, color.NRGBA{R: 100, G: 120, B: 140, A: 255})
+
+	withinTolerance := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	withinTolerance.SetNRGBA(0, 0, color.NRGBA{R: 102, G: 121, B: 143, A: 255})
+
+	outsideTolerance := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	outsideTolerance.SetNRGBA(0, 0, color.NRGBA{R: 106, G: 120, B: 140, A: 255})
+
+	if !compareImages(base, exact, 0) {
+		t.Fatal("expected zero tolerance to keep exact-match behavior")
+	}
+	if compareImages(base, withinTolerance, 0) {
+		t.Fatal("expected zero tolerance to reject non-identical pixels")
+	}
+	if !compareImages(base, withinTolerance, 4) {
+		t.Fatal("expected within-tolerance pixel difference to match")
+	}
+	if compareImages(base, outsideTolerance, 4) {
+		t.Fatal("expected out-of-tolerance pixel difference to mismatch")
 	}
 }
 
 func TestNormalizeRegionInputRejectsMissingTaggedState(t *testing.T) {
 	_, err := normalizeRegionInput(RecognitionRegionInput{
 		ID:     "region-01",
-		Label:  "测试区域",
+		Label:  "test-region",
 		X:      0,
 		Y:      0,
 		Width:  0.5,
@@ -278,6 +341,107 @@ func TestNormalizeRegionInputRejectsMissingTaggedState(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected normalizeRegionInput to reject state without recruitment tag")
+	}
+}
+
+func TestSaveRecognitionTemplateRejectsNegativeStateTolerance(t *testing.T) {
+	app := NewApp()
+	screenshot := base64.StdEncoding.EncodeToString(mustEncodePNGForTest(t, image.NewNRGBA(image.Rect(0, 0, 1, 1))))
+	_, err := app.SaveRecognitionTemplate(RecognitionTemplateInput{
+		Title:         "test-window",
+		ClassName:     "test-class",
+		ScreenshotPNG: screenshot,
+		Width:         1,
+		Height:        1,
+		Regions: []RecognitionRegionInput{
+			{
+				ID:     "region-01",
+				Label:  "region",
+				X:      0,
+				Y:      0,
+				Width:  1,
+				Height: 1,
+				States: []RecognitionRegionStateInput{
+					{
+						ID:        "state-01",
+						Tag:       "\u8fd1\u536b",
+						Tolerance: -1,
+						ImagePNG:  screenshot,
+					},
+				},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected negative state tolerance to be rejected")
+	}
+}
+
+func TestSaveRecognitionTemplatePersistsPerStateTolerance(t *testing.T) {
+	originalWorkingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("failed to change working directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(originalWorkingDir); chdirErr != nil {
+			t.Fatalf("failed to restore working directory: %v", chdirErr)
+		}
+	})
+
+	app := NewApp()
+	screenshot := base64.StdEncoding.EncodeToString(mustEncodePNGForTest(t, image.NewNRGBA(image.Rect(0, 0, 1, 1))))
+	saved, err := app.SaveRecognitionTemplate(RecognitionTemplateInput{
+		Title:         "test-window",
+		ClassName:     "test-class",
+		ScreenshotPNG: screenshot,
+		Width:         1,
+		Height:        1,
+		Regions: []RecognitionRegionInput{
+			{
+				ID:     "region-01",
+				Label:  "region",
+				X:      0,
+				Y:      0,
+				Width:  1,
+				Height: 1,
+				States: []RecognitionRegionStateInput{
+					{
+						ID:        "state-01",
+						Tag:       "\u8fd1\u536b",
+						Tolerance: 3,
+						ImagePNG:  screenshot,
+					},
+					{
+						ID:        "state-02",
+						Tag:       "\u72d9\u51fb",
+						Tolerance: 0,
+						ImagePNG:  screenshot,
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveRecognitionTemplate returned error: %v", err)
+	}
+	if len(saved.Regions) != 1 || len(saved.Regions[0].States) != 2 {
+		t.Fatalf("expected saved template to include two states, got %+v", saved.Regions)
+	}
+	if saved.Regions[0].States[0].Tolerance != 3 || saved.Regions[0].States[1].Tolerance != 0 {
+		t.Fatalf("expected saved state tolerances to persist, got %+v", saved.Regions[0].States)
+	}
+
+	loaded, err := app.GetRecognitionTemplate(saved.ID)
+	if err != nil {
+		t.Fatalf("GetRecognitionTemplate returned error: %v", err)
+	}
+	if loaded.Regions[0].States[0].Tolerance != 3 || loaded.Regions[0].States[1].Tolerance != 0 {
+		t.Fatalf("expected loaded state tolerances to persist, got %+v", loaded.Regions[0].States)
 	}
 }
 
@@ -526,9 +690,10 @@ type recognitionTemplateFixtureRegion struct {
 }
 
 type recognitionTemplateFixtureState struct {
-	id   string
-	tag  string
-	fill color.NRGBA
+	id        string
+	tag       string
+	tolerance int
+	fill      color.NRGBA
 }
 
 func prepareRecognitionTemplateFixture(t *testing.T, fixture recognitionTemplateFixture) string {
@@ -580,6 +745,7 @@ func prepareRecognitionTemplateFixture(t *testing.T, fixture recognitionTemplate
 			states = append(states, RecognitionRegionState{
 				ID:            state.id,
 				Tag:           state.tag,
+				Tolerance:     state.tolerance,
 				ReferencePath: filepath.ToSlash(filepath.Join("regions", region.id, stateFilename)),
 				CreatedAt:     time.Now().Format(time.RFC3339),
 			})
