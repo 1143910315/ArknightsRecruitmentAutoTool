@@ -73,7 +73,7 @@
                     </div>
                 </div>
 
-                <div class="selected-tags" v-if="selectedTags.length">
+                <div v-if="selectedTags.length" class="selected-tags">
                     <span v-for="tag in selectedTags" :key="tag" class="selected-tag-chip">{{ tag }}</span>
                 </div>
 
@@ -96,13 +96,13 @@
                 </div>
             </section>
 
-            <section class="panel empty-state" v-if="!selectedTags.length">
+            <section v-if="!selectedTags.length" class="panel empty-state">
                 <p class="section-kicker">Combinations</p>
                 <h3>先选择一个或多个标签</h3>
                 <p>选择标签后会立即显示全部有效组合及其匹配干员。</p>
             </section>
 
-            <section class="panel empty-state" v-else-if="!resultGroups.length">
+            <section v-else-if="!resultGroups.length" class="panel empty-state">
                 <p class="section-kicker">No Matches</p>
                 <h3>当前标签组合没有匹配干员</h3>
                 <p>可以减少标签数量或更换标签，查看其他有效组合。</p>
@@ -124,22 +124,19 @@
                             :key="`${group.key}-${operator.order}-${operator.name}`"
                             class="operator-card"
                         >
-                            <div class="operator-card-top">
-                                <strong>{{ operator.name }}</strong>
-                                <span>{{ operator.rarity }} 星</span>
-                            </div>
-                            <p class="operator-meta">
-                                {{ operator.metadata.profession || '未知职业' }} / {{ operator.metadata.origin || '未知阵营' }}
-                            </p>
-                            <div class="operator-tags">
-                                <span
-                                    v-for="tag in operator.recruitmentTagList"
-                                    :key="`${group.key}-${operator.name}-${tag}`"
-                                    class="operator-tag"
+                            <div
+                                class="operator-image-frame"
+                                :style="{ '--operator-rarity-border': operatorBorderColor(operator) }"
+                            >
+                                <img
+                                    v-if="operatorImage(operator)"
+                                    class="operator-image"
+                                    :src="operatorImage(operator)"
+                                    :alt="operator.name"
                                 >
-                                    {{ tag }}
-                                </span>
+                                <div v-else class="operator-image-fallback">无图</div>
                             </div>
+                            <p class="operator-name">{{ operator.name }}</p>
                         </article>
                     </div>
                 </article>
@@ -152,6 +149,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
+    GetCachedOperatorImage,
     LoadCachedOperatorData,
     LoadRecognitionTemplates,
     RunPublicRecruitmentRecognition,
@@ -164,6 +162,7 @@ const loading = ref(false)
 const errorMessage = ref('')
 const hasRecruitmentData = ref(false)
 const fromCache = ref(false)
+const operatorImageSources = ref({})
 const autoRecognitionEnabled = ref(false)
 const autoRecognitionBusy = ref(false)
 const autoRecognitionTemplate = ref(null)
@@ -172,6 +171,7 @@ const autoRecognitionLastSuccessAt = ref('')
 
 let autoRecognitionTimer = null
 let autoRecognitionSession = 0
+let imageRequestToken = 0
 
 const sourceModeLabel = computed(() => (fromCache.value ? '本地缓存' : '未加载'))
 const autoRecognitionTemplateLabel = computed(() => {
@@ -280,6 +280,62 @@ function normalizeOperator(operator) {
     }
 }
 
+function operatorImage(operator) {
+    if (!operator?.localImagePath) {
+        return ''
+    }
+    return operatorImageSources.value[operator.localImagePath] || ''
+}
+
+function operatorBorderColor(operator) {
+    switch (operator?.rarity) {
+    case 6:
+        return '#f0e028'
+    case 5:
+        return '#f0a94d'
+    case 4:
+        return '#8960ce'
+    case 3:
+        return '#618bf5'
+    case 1:
+    case 2:
+    default:
+        return '#dedede'
+    }
+}
+
+async function loadOperatorImages(records) {
+    const currentToken = ++imageRequestToken
+    operatorImageSources.value = {}
+
+    const uniquePaths = [...new Set(records.map((item) => item.localImagePath).filter(Boolean))]
+    if (!uniquePaths.length) {
+        return
+    }
+
+    const resolvedEntries = await Promise.all(uniquePaths.map(async (relativePath) => {
+        try {
+            const result = await GetCachedOperatorImage(relativePath)
+            if (!result?.found || !result.dataBase64) {
+                return [relativePath, '']
+            }
+            const mimeType = result.mimeType || 'image/jpeg'
+            return [relativePath, `data:${mimeType};base64,${result.dataBase64}`]
+        } catch (error) {
+            console.error(`加载干员图片失败: ${relativePath}`, error)
+            return [relativePath, '']
+        }
+    }))
+
+    if (currentToken !== imageRequestToken) {
+        return
+    }
+
+    operatorImageSources.value = Object.fromEntries(
+        resolvedEntries.filter(([, imageSource]) => Boolean(imageSource)),
+    )
+}
+
 async function loadRecruitmentData() {
     loading.value = true
     errorMessage.value = ''
@@ -292,12 +348,14 @@ async function loadRecruitmentData() {
             .filter(Boolean)
 
         recruitableOperators.value = normalized
+        await loadOperatorImages(normalized)
         fromCache.value = Boolean(result.fromCache)
         hasRecruitmentData.value = Boolean(result.cacheAvailable && normalized.length)
     } catch (error) {
         console.error('加载公开招募数据失败:', error)
         errorMessage.value = typeof error === 'string' ? error : error?.message || '加载公开招募数据失败'
         recruitableOperators.value = []
+        operatorImageSources.value = {}
         hasRecruitmentData.value = false
     } finally {
         loading.value = false
@@ -441,8 +499,7 @@ onBeforeUnmount(() => {
 
 .hero-card,
 .selection-header,
-.result-header,
-.operator-card-top {
+.result-header {
     display: flex;
     justify-content: space-between;
     gap: 1rem;
@@ -459,7 +516,6 @@ onBeforeUnmount(() => {
 .summary,
 .meta-text,
 .selection-note,
-.operator-meta,
 .automation-copy {
     margin: 0;
 }
@@ -479,7 +535,6 @@ h4 {
 
 .summary,
 .selection-note,
-.operator-meta,
 .automation-copy {
     color: #55728f;
 }
@@ -502,7 +557,6 @@ h4 {
 .results-layout,
 .tag-group-list,
 .operator-card-grid,
-.operator-tags,
 .tag-chip-list,
 .selected-tags {
     display: grid;
@@ -545,15 +599,13 @@ h4 {
 }
 
 .tag-chip-list,
-.selected-tags,
-.operator-tags {
+.selected-tags {
     display: flex;
     flex-wrap: wrap;
 }
 
 .tag-chip,
 .selected-tag-chip,
-.operator-tag,
 .result-count,
 .secondary-button,
 .toggle-chip {
@@ -586,7 +638,6 @@ h4 {
 }
 
 .selected-tag-chip,
-.operator-tag,
 .result-count {
     padding: 0.35rem 0.75rem;
     background: rgba(91, 169, 255, 0.14);
@@ -617,15 +668,61 @@ h4 {
 }
 
 .operator-card-grid {
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
 }
 
 .operator-card {
-    border-radius: 1.2rem;
-    padding: 1rem;
-    background: rgba(91, 169, 255, 0.08);
+    align-items: center;
     display: grid;
-    gap: 0.6rem;
+    gap: 0.7rem;
+    justify-items: center;
+    padding: 0.25rem;
+    text-align: center;
+}
+
+.operator-image-frame {
+    --operator-rarity-border: #dedede;
+    align-items: center;
+    aspect-ratio: 1;
+    background: rgba(255, 255, 255, 0.92);
+    border: 3px solid var(--operator-rarity-border);
+    border-radius: 1rem;
+    box-shadow:
+        0 10px 24px rgba(101, 157, 212, 0.14),
+        inset 0 1px 0 rgba(255, 255, 255, 0.85);
+    display: flex;
+    justify-content: center;
+    overflow: hidden;
+    width: min(100%, 92px);
+}
+
+.operator-image,
+.operator-image-fallback {
+    height: 100%;
+    width: 100%;
+}
+
+.operator-image {
+    display: block;
+    object-fit: cover;
+}
+
+.operator-image-fallback {
+    align-items: center;
+    color: #7f92a8;
+    display: flex;
+    font-size: 0.82rem;
+    font-weight: 600;
+    justify-content: center;
+}
+
+.operator-name {
+    color: #24527c;
+    font-size: 0.95rem;
+    font-weight: 700;
+    line-height: 1.35;
+    margin: 0;
+    word-break: break-word;
 }
 
 @media (max-width: 900px) {
